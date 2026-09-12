@@ -131,6 +131,46 @@ Recommendation/Risk/Verification 에이전트 체인을 붙일 때 그대로 쓰
 
 ---
 
+## 8. Recommendation / Risk / Verification Agent 파이프라인 (PRD §9~§10)
+
+```
+Feature(district_features)
+    → Fact Sheet          (fact_sheet.py, 결정론적 코드 — Claude 호출 없음)
+    → Recommendation Agent / Risk Agent  (narrative_agents.py, Claude)
+    → Verification Agent  (narrative_agents.verify_and_correct, Assertion Validator)
+    → Verified Result
+```
+
+`.env`에 `ANTHROPIC_API_KEY`를 채운 뒤:
+
+```bash
+# Claude를 부르지 않고 Fact Sheet만 확인 (API 키 없어도 됨)
+python pipeline.py --dry-run
+
+# 전체 실행: 추천/반대 근거 생성 → 검증 → 정정
+python pipeline.py
+
+# 상권/업종/조건 지정
+python pipeline.py --district-code 3120014 --business-code CS100010 \
+  --budget 3000 --age 20 --character resident --priority survival
+```
+
+**왜 이렇게 나눴는가** — Claude는 새 숫자를 계산하지 않는다(PRD §1).
+`fact_sheet.py`가 `verification_tools.py`의 6개 Tool로 "이 문장에 쓸 수
+있는 사실"을 먼저 확정해 Claude에게 넘기고, Claude는 그 중 골라서
+문장을 쓰고 어떤 사실(`fact_key`)을 근거로 어떤 수치(`stated_value`)를
+적었는지 함께 반환한다. Verification Agent는 그 수치가 Fact의 실제
+값과 허용오차 내에서 일치하는지만 `assertion_validator()`로 확인한다
+— 불일치하면 정확한 값을 알려주고 딱 한 번 재작성을 요청하고
+(PRD §10.3), 그래도 틀리면 그 문장은 최종 결과에서 제외한다
+(PRD §18, Unsupported Claim Rate 목표 0%).
+
+LightGBM 생존 안정성 Score는 아직 없어 Fact Sheet에 포함되어 있지
+않다. 모델이 준비되면 `fact_sheet.build_fact_sheet()`에 한 줄
+추가하면 된다.
+
+---
+
 ## 현재 스키마와 관련된 의도적 NULL
 
 ### `competition_density`

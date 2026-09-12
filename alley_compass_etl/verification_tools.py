@@ -653,22 +653,41 @@ def to_verification_claim_row(analysis_id: int, result: dict[str, Any]) -> dict[
 
 
 # ---------------------------------------------------------------------
-# 데모 — 실제 데이터로 PRD §10.3 흐름을 그대로 재현
+# 데모용 상권/업종 선택 — verification_tools/fact_sheet/pipeline 데모가 공유
 # ---------------------------------------------------------------------
 
-def _demo(df: pd.DataFrame, business_code: str | None, district_code: str | None) -> None:
+def pick_demo_target(
+    df: pd.DataFrame,
+    business_code: str | None = None,
+    district_code: str | None = None,
+) -> tuple[str, str, pd.DataFrame]:
+    """데모/CLI에서 쓸 (business_code, district_code, 해당 업종 행)을 고른다.
+
+    district_code를 안 주면 PRD §10.3 예시("상위 8%")와 비슷한 그림이
+    나오도록 20대 유동인구 상위 8% 부근 상권을 고른다 (1위를 고르면
+    top_pct=0%가 되어 오차 예시를 만들기 애매해진다).
+    """
     if business_code is None:
         business_code = df["business_code"].dropna().iloc[0]
     biz_rows = df[df["business_code"] == business_code]
+
     if district_code is None:
-        # PRD §10.3 예시("상위 8%")와 비슷한 그림이 나오도록 상위 8% 부근 상권을 고른다.
-        # (1위를 고르면 top_pct=0%가 되어 데모용 오차 예시를 만들기 애매해진다)
         ranked = (
             biz_rows.dropna(subset=["foot_traffic_20"])
             .sort_values("foot_traffic_20", ascending=False)["district_code"]
             .reset_index(drop=True)
         )
         district_code = ranked.iloc[max(0, int(len(ranked) * 0.08))]
+
+    return str(business_code), str(district_code), biz_rows
+
+
+# ---------------------------------------------------------------------
+# 데모 — 실제 데이터로 PRD §10.3 흐름을 그대로 재현
+# ---------------------------------------------------------------------
+
+def _demo(df: pd.DataFrame, business_code: str | None, district_code: str | None) -> None:
+    business_code, district_code, biz_rows = pick_demo_target(df, business_code, district_code)
 
     match = biz_rows[biz_rows["district_code"] == str(district_code)]
     if match.empty:

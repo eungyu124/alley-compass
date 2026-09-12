@@ -20,6 +20,7 @@ compass/
 alley_compass_etl/data/raw/
 alley_compass_etl/data/processed/
 
-# ── Editor ─────────────────────────────────────────
+# ── Editor / local tool state ───────────────────────
 .idea/
 *.swp
+.claude/
