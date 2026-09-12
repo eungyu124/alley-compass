@@ -602,6 +602,21 @@ def verify_claim(df: pd.DataFrame, claim: Claim) -> dict[str, Any]:
             "verification_reason": f"검증 불가: {exc}",
         }
 
+    if actual is None:
+        # 예: raw_value 조회 대상이 원본 데이터에 없는 경우.
+        # assertion_validator는 claimed/actual 중 하나가 없으면 ToolError를
+        # 던지므로, 여기서 먼저 "검증 불가"로 명확히 반환한다.
+        return {
+            "claim_text": claim.claim_text,
+            "metric": claim.metric,
+            "verification_type": claim.verification_type,
+            "claimed_value": claim.claimed_value,
+            "actual_value": None,
+            "verified": False,
+            "verification_tool": tool_name,
+            "verification_reason": "원본 데이터에 해당 값이 없어 검증할 수 없습니다.",
+        }
+
     result = assertion_validator(
         claimed_value=claim.claimed_value,
         actual_value=actual,
