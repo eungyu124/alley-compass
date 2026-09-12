@@ -91,6 +91,46 @@ python alley_compass_etl.py ... --refresh
 
 ---
 
+## 7. Verification Tools (PRD §11)
+
+Recommendation/Risk Agent가 만든 문장을 원본 데이터와 대조하는 6개 Tool.
+LLM을 쓰지 않고 전부 Pandas/통계 연산으로 판정한다 (PRD §10.3, §18).
+
+```bash
+# 로컬 CSV(district_features_debug.csv)로 데모 실행
+python verification_tools.py
+
+# 상권/업종 지정
+python verification_tools.py --district-code 3120014 --business-code CS100010
+
+# Supabase에 실제로 업로드된 데이터로 실행
+python verification_tools.py --supabase
+```
+
+데모는 PRD §10.3의 "상위 8% → 검증 → 상위 약 10%로 정정" 흐름을 실제
+데이터로 재현하고, 이어서 `verify_claim()` 배치 실행 예시를 보여준다.
+
+| Tool | 함수 |
+|---|---|
+| Data Lookup Tool | `data_lookup()` |
+| Percentile Tool | `percentile()` |
+| Trend Calculator | `trend()` |
+| Competition Density Tool | `competition_density()` |
+| Budget Validator | `budget_validator()` |
+| Assertion Validator | `assertion_validator()` |
+
+`verify_claim(df, Claim(...))`이 위 6개를 `verification_type`에 따라
+호출하는 통합 디스패처이고, `to_verification_claim_row()`는 결과를
+`verification_claims` 테이블 insert용 행으로 변환한다 — 나중에
+Recommendation/Risk/Verification 에이전트 체인을 붙일 때 그대로 쓰면 된다.
+
+**Budget Validator에 대한 주의**: 5종 공식 데이터셋에는 보증금/임대료가
+없다. 그래서 이 Tool은 "추정 보증금과 예산 비교의 산술이 맞는가"만
+검증하고, 추정 보증금 자체가 데이터로 검증된 값이 아니라는 사실을
+결과의 `note`에 항상 남긴다.
+
+---
+
 ## 현재 스키마와 관련된 의도적 NULL
 
 ### `competition_density`
