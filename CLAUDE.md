@@ -8,10 +8,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 프로젝트 개요·빠른 시작·설계 원칙은 루트 `README.md`에 있다. 이 파일은 그 위에
 **코드를 고칠 때 필요한 맥락**만 담는다.
 
-현재 있는 것은 PRD + DB 스키마 + ETL 파이프라인 + React 프론트(목업 데이터)다.
-PRD가 설계하는 FastAPI 백엔드, LightGBM 모델, Agent 체인(Recommendation / Risk /
-Verification)은 **아직 구현되지 않았다.** 새 컴포넌트를 만들 때는 `docs/PRD.md`가
-사양의 기준 문서다 (§9~§11 Agent/Tool, §14~§15 모델·Temporal Split, §19 기술 스택).
+현재 있는 것은 PRD + DB 스키마 + ETL 파이프라인 + 검증 Tool 6종 + Agent 체인
+(Recommendation / Risk / Verification, `alley_compass_etl/narrative_agents.py`) +
+React 프론트(목업 데이터)다. Agent 체인은 결정론적 부분(Fact Sheet)까지는 실데이터로
+검증됐지만, Claude API 호출 자체는 계정 크레딧 부족으로 아직 라이브 테스트 전이다.
+PRD가 설계하는 FastAPI 백엔드와 LightGBM 모델은 **아직 구현되지 않았다.** 새
+컴포넌트를 만들 때는 `docs/PRD.md`가 사양의 기준 문서다 (§9~§11 Agent/Tool,
+§14~§15 모델·Temporal Split, §19 기술 스택).
 
 문서·주석·로그·에러 메시지는 모두 한국어다. 새 코드도 같은 언어를 유지한다.
 

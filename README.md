@@ -16,7 +16,7 @@
 
 ## 현재 상태
 
-완성된 서비스가 아니다. 부품 넷이 있고, 핵심인 예측 모델과 에이전트는 아직 없다.
+완성된 서비스가 아니다. 예측 모델과 백엔드가 아직 없다.
 
 | 구성 | 상태 | 위치 |
 |---|---|---|
@@ -24,13 +24,18 @@
 | DB 스키마 | ✅ 작성 완료 (Supabase 수동 적용) | [`db/schema_v1.1.sql`](db/schema_v1.1.sql) |
 | 데이터 수집 파이프라인 (ETL) | ✅ 동작 | [`alley_compass_etl/`](alley_compass_etl/) |
 | 검증 Tool 6종 | ✅ 동작 (LLM 미사용, 결정론적) | [`alley_compass_etl/verification_tools.py`](alley_compass_etl/verification_tools.py) |
+| Claude 에이전트 3종 | ⚠️ 구현 완료, **실제 API 응답 미검증** (계정 크레딧 필요) | [`alley_compass_etl/narrative_agents.py`](alley_compass_etl/narrative_agents.py), [`fact_sheet.py`](alley_compass_etl/fact_sheet.py), [`pipeline.py`](alley_compass_etl/pipeline.py) |
 | 웹 프론트 | ⚠️ 화면 완성, **데이터는 목업** | [`web/`](web/) |
 | LightGBM 예측 모델 | ❌ 미착수 | — |
-| Claude 에이전트 3종 | ❌ 미착수 | — |
 | FastAPI 백엔드 | ❌ 미착수 | — |
 
 **화면에 보이는 숫자는 아직 전부 목업이다.** 실데이터를 흘리려면 서울 열린데이터광장
 API 키와 Supabase 프로젝트가 필요하다 (아래 빠른 시작 참고).
+
+Claude 에이전트 3종(Recommendation/Risk/Verification)은 코드·구조·검증 로직까지 다
+구현되어 있고 결정론적 부분(Fact Sheet 생성)은 실제 데이터로 확인됐지만, Claude API
+호출 자체는 계정에 크레딧이 없어 아직 라이브로 못 돌려봤다 — 크레딧 채운 뒤
+`python alley_compass_etl/pipeline.py` 로 확인.
 
 ---
 
@@ -45,10 +50,13 @@ alley-compass/
 │   └── prototype-v0.html   React 이식 전 원본 프로토타입 (디자인 레퍼런스)
 ├── db/
 │   └── schema_v1.1.sql     Supabase/PostgreSQL 스키마 (테이블 10개 + RLS)
-├── alley_compass_etl/      서울시 Open API → 전처리 → Supabase 적재
+├── alley_compass_etl/      서울시 Open API → 전처리 → Supabase 적재 → Agent
 │   ├── alley_compass_etl.py    ETL 파이프라인
 │   ├── verification_tools.py   검증 Tool 6종 (PRD §11)
-│   └── README.md               ETL 사용법 · 의도적 NULL 설명
+│   ├── fact_sheet.py            Feature → Agent에게 건넬 사실(Fact) 목록 생성
+│   ├── narrative_agents.py      Recommendation/Risk/Verification Agent (Claude)
+│   ├── pipeline.py               위 전체를 잇는 CLI (--dry-run 지원)
+│   └── README.md               ETL·Agent 사용법 · 의도적 NULL 설명
 └── web/                    React 19 + Vite 프론트엔드
     ├── src/
     └── README.md           구조 · 실데이터 연결 절차
