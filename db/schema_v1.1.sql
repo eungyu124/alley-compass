@@ -739,5 +739,35 @@ from anon;
 
 
 -- =========================================================
+-- v1.2 패치 — service_role 명시적 GRANT
+--
+-- service_role은 RLS를 우회하지만, 그건 "정책 검사를 건너뛴다"는
+-- 뜻이지 "테이블 GRANT가 자동으로 생긴다"는 뜻이 아니다. 신형
+-- Secret API Key(sb_secret_...)를 쓰는 프로젝트에서는 이 GRANT가
+-- 없으면 FastAPI(service_role)조차 "permission denied"를 받는다.
+-- 기존 프로젝트에 적용할 때는 이 섹션만 SQL Editor에 붙여넣어도 된다.
+-- =========================================================
+
+grant usage on schema public to service_role;
+
+grant select, insert, update, delete
+on public.districts,
+   public.business_types,
+   public.district_features,
+   public.model_versions,
+   public.predictions,
+   public.search_sessions,
+   public.recommendation_runs,
+   public.recommendations,
+   public.agent_analyses,
+   public.verification_claims
+to service_role;
+
+grant usage, select
+on all sequences in schema public
+to service_role;
+
+
+-- =========================================================
 -- 완료
 -- =========================================================

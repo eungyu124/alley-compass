@@ -1,0 +1,8 @@
+pandas>=2.2
+numpy>=2.0
+python-dotenv>=1.0
+supabase>=2.0
+lightgbm>=4.5
+scikit-learn>=1.4
+shap>=0.45
+joblib>=1.4

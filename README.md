@@ -16,26 +16,35 @@
 
 ## 현재 상태
 
-완성된 서비스가 아니다. 예측 모델과 백엔드가 아직 없다.
+완성된 서비스가 아니다. 부품은 다 있고, 실제 다분기 데이터로 학습·검증하는
+마지막 단계가 남았다.
 
 | 구성 | 상태 | 위치 |
 |---|---|---|
 | 기획 (PRD v1.1) | ✅ | [`docs/PRD.md`](docs/PRD.md) |
-| DB 스키마 | ✅ 작성 완료 (Supabase 수동 적용) | [`db/schema_v1.1.sql`](db/schema_v1.1.sql) |
+| DB 스키마 | ✅ 작성 완료 (Supabase 수동 적용, v1.2 service_role 패치 포함) | [`db/schema_v1.1.sql`](db/schema_v1.1.sql) |
 | 데이터 수집 파이프라인 (ETL) | ✅ 동작 | [`alley_compass_etl/`](alley_compass_etl/) |
 | 검증 Tool 6종 | ✅ 동작 (LLM 미사용, 결정론적) | [`alley_compass_etl/verification_tools.py`](alley_compass_etl/verification_tools.py) |
 | Claude 에이전트 3종 | ⚠️ 구현 완료, **실제 API 응답 미검증** (계정 크레딧 필요) | [`alley_compass_etl/narrative_agents.py`](alley_compass_etl/narrative_agents.py), [`fact_sheet.py`](alley_compass_etl/fact_sheet.py), [`pipeline.py`](alley_compass_etl/pipeline.py) |
 | 웹 프론트 | ⚠️ 화면 완성, **데이터는 목업** | [`web/`](web/) |
-| LightGBM 예측 모델 | ❌ 미착수 | — |
-| FastAPI 백엔드 | ❌ 미착수 | — |
+| FastAPI 백엔드 | ⚠️ 동작 (`/rank`, `/districts/{code}/agents`), **랭킹은 아직 휴리스틱** | [`backend/`](backend/) |
+| LightGBM 예측 모델 | ⚠️ 학습 파이프라인 완성, **실제 다분기 데이터로 학습 전** (합성 데이터로 배관만 검증) | [`ml/`](ml/) |
 
 **화면에 보이는 숫자는 아직 전부 목업이다.** 실데이터를 흘리려면 서울 열린데이터광장
 API 키와 Supabase 프로젝트가 필요하다 (아래 빠른 시작 참고).
 
-Claude 에이전트 3종(Recommendation/Risk/Verification)은 코드·구조·검증 로직까지 다
-구현되어 있고 결정론적 부분(Fact Sheet 생성)은 실제 데이터로 확인됐지만, Claude API
-호출 자체는 계정에 크레딧이 없어 아직 라이브로 못 돌려봤다 — 크레딧 채운 뒤
-`python alley_compass_etl/pipeline.py` 로 확인.
+- **Claude 에이전트 3종**: 코드·구조·검증 로직까지 다 구현되어 있고 결정론적 부분
+  (Fact Sheet 생성)은 실제 데이터로 확인됐지만, Claude API 호출 자체는 계정에
+  크레딧이 없어 아직 라이브로 못 돌려봤다 — 크레딧 채운 뒤
+  `python alley_compass_etl/pipeline.py` 로 확인.
+- **LightGBM**: `alley_compass_etl.py`로 아직 1개 분기(20251)만 받아둔 상태라
+  PRD §15의 Temporal Split(과거 학습 → 미래 검증)을 할 수 있는 다분기 데이터가
+  없다. `ml/train.py --synthetic`으로 배관(라벨링·분할·학습·평가지표)이 실제로
+  작동하는지는 확인했지만, 이건 합성 데이터라 실제 예측 성능이 아니다. 여러
+  분기를 실제로 수집한 뒤 `ml/train.py`로 다시 학습해야 진짜 모델이 나온다.
+- **FastAPI**: `/rank`는 지금 LightGBM 대신 원본 feature로 계산한 휴리스틱
+  Score(`model_version: "heuristic-v0"`)를 쓴다. 모델이 준비되면
+  `backend/scoring.py` 한 곳만 바꾸면 된다.
 
 ---
 
@@ -57,6 +66,15 @@ alley-compass/
 │   ├── narrative_agents.py      Recommendation/Risk/Verification Agent (Claude)
 │   ├── pipeline.py               위 전체를 잇는 CLI (--dry-run 지원)
 │   └── README.md               ETL·Agent 사용법 · 의도적 NULL 설명
+├── backend/                FastAPI — 위 모듈들을 엔드포인트로 노출
+│   ├── main.py                  /rank, /districts/{code}/agents 등
+│   ├── scoring.py                랭킹 로직 (현재 휴리스틱, LightGBM 대기)
+│   └── README.md
+├── ml/                     LightGBM 생존 안정성 모델 (PRD §14~§15)
+│   ├── labels.py                 Label 정의 (PRD §7.1)
+│   ├── features.py               Feature 목록
+│   ├── train.py                  Temporal Split 학습·평가 (--synthetic 배관 점검)
+│   └── README.md
 └── web/                    React 19 + Vite 프론트엔드
     ├── src/
     └── README.md           구조 · 실데이터 연결 절차

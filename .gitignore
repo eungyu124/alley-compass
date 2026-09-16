@@ -28,3 +28,6 @@ alley_compass_etl/data/processed/
 node_modules/
 dist/
 *.local
+
+# ── ML 산출물 (재현 가능, 용량 문제로 커밋 안 함) ────
+ml/models/*.joblib

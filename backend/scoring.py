@@ -1,0 +1,174 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+골목 컴퍼스 (Alley Compass) — 랭킹 스코어러
+PRD §16 "사용자 Ranking Logic" 구현
+
+    Model Survival Stability + Budget Fit + Target Customer Fit + User Preference
+        -> Personalized Ranking
+
+LightGBM 생존 안정성 Score(PRD §14)는 아직 학습 전이다(다분기 데이터 필요,
+alley_compass_etl/README.md 참고). 그때까지 이 모듈이 원본 feature로 계산한
+휴리스틱 Score를 대신 쓴다 — MODEL_VERSION="heuristic-v0"로 항상 명시한다.
+LightGBM이 준비되면 이 파일의 stability_score 계산 부분만 모델 추론 호출로
+바꾸면 되고, API 응답 모양(RankResponse)은 그대로 유지된다.
+
+Budget Fit: 5종 공식 데이터셋에 보증금/임대료가 없어(verification_tools.py
+budget_validator 참고) 상권별로 검증 가능한 예산 적합도를 계산할 수 없다.
+그래서 이 버전의 랭킹에는 예산을 반영하지 않는다 — 있지도 않은 임대료
+데이터를 상권마다 다르게 지어내 순위에 반영하면 없는 데이터를 있는 것처럼
+쓰는 것이기 때문이다. 프론트/CLI 단계의 "추정 보증금"(narrative_agents.
+budget_margin fact)은 사용자가 직접 입력한 단일 추정치를 검증하는 용도로만
+쓴다.
+"""
+
+from __future__ import annotations
+
+from typing import Literal
+
+import pandas as pd
+
+from verification_tools import demand_series
+
+MODEL_VERSION = "heuristic-v0"
+
+Age = Literal["20", "30", "both"]
+Character = Literal["foot", "resident", "worker", "campus"]
+Priority = Literal["survival", "cost", "growth"]
+
+_BASE_WEIGHTS = {"demand": 0.30, "comp": 0.24, "perf": 0.16, "access": 0.12, "stability": 0.18}
+
+
+def _pct(series: pd.Series) -> pd.Series:
+    """0~100 백분위. verification_tools.percentile()과 같은 정의
+    (값이 클수록 백분위가 높다)."""
+    return series.rank(pct=True, method="average") * 100
+
+
+def _competition_score(scope: pd.DataFrame) -> pd.Series:
+    """값이 클수록 경쟁이 여유롭다(=좋다)는 방향으로 통일한 0~100 점수.
+
+    demand_series()로 배후수요를 만들 수 있으면 "점포당 배후수요" 백분위를,
+    아니면(배후수요 컬럼이 전부 비었으면) 점포수가 적을수록 좋다는 뜻이므로
+    점포수 백분위를 뒤집어서 쓴다. verification_tools.competition_density()와
+    같은 정의다.
+    """
+    demand, _ = demand_series(scope)
+    if demand is not None:
+        stores = scope["store_count"].where(scope["store_count"] > 0)
+        per_store = demand / stores
+        return _pct(per_store)
+    return 100 - _pct(scope["store_count"])
+
+
+def _safe_pct(series: pd.Series) -> pd.Series | None:
+    """전부 NaN이면(예: 분기가 1개뿐이라 성장률을 계산할 수 없는 경우)
+    None을 돌려준다 — 중앙값으로 채워 넣지 않는다. 하나라도 값이 있으면
+    나머지 NaN만 중앙값으로 채운 뒤 백분위를 계산한다."""
+    if series.notna().sum() == 0:
+        return None
+    return _pct(series.fillna(series.median()))
+
+
+def rank_districts(
+    df: pd.DataFrame,
+    business_code: str,
+    *,
+    age: Age = "both",
+    character: Character = "foot",
+    priority: Priority = "survival",
+) -> tuple[pd.DataFrame, str]:
+    """한 업종에 대해 서울 전체 상권을 조건에 맞게 재랭킹한다.
+
+    구성 요소(demand/comp/perf/access/stability) 중 이번 데이터에 아예 없는
+    지표는(예: 분기가 1개뿐이라 매출 성장률을 계산 못하는 경우) 중앙값 등으로
+    지어내지 않고 가중치 계산에서 빼고 나머지로 재정규화한다 — 없는 데이터로
+    점수를 오염시키지 않기 위해서다.
+
+    반환: (rank/district_code/district_name/stability_score/target_fit_score/
+    final_score/breakdown 컬럼을 가진 DataFrame, 사용된 기준시점)
+    """
+    scope = df[df["business_code"] == str(business_code)].copy()
+    if scope.empty:
+        raise ValueError(f"업종 코드 '{business_code}'에 해당하는 데이터가 없습니다.")
+
+    as_of = scope["reference_date"].max()
+    scope = (
+        scope[scope["reference_date"] == as_of]
+        .dropna(subset=["district_code", "district_name"])
+        .drop_duplicates("district_code")
+        .reset_index(drop=True)
+    )
+
+    foot20_pct = _pct(scope["foot_traffic_20"].fillna(scope["foot_traffic_20"].median()))
+    foot30_pct = _pct(scope["foot_traffic_30"].fillna(scope["foot_traffic_30"].median()))
+    resident_pct = _pct(scope["resident_population"].fillna(scope["resident_population"].median()))
+    worker_pct = _pct(scope["worker_population"].fillna(scope["worker_population"].median()))
+
+    demand_by_character = {
+        "foot": 0.55 * foot20_pct + 0.45 * foot30_pct,
+        "resident": resident_pct,
+        "worker": worker_pct,
+        "campus": 0.7 * foot20_pct + 0.3 * foot30_pct,
+    }
+    demand = demand_by_character[character]
+    if age == "20":
+        demand = 0.6 * demand + 0.4 * foot20_pct
+    elif age == "30":
+        demand = 0.6 * demand + 0.4 * foot30_pct
+
+    comp = _competition_score(scope)
+    comp = comp if comp.notna().any() else None
+
+    components: dict[str, pd.Series | None] = {
+        "demand": demand,
+        "comp": comp,
+        "perf": _safe_pct(scope["sales_growth_rate"]),
+        "stability": (
+            None
+            if scope["closure_rate"].notna().sum() == 0
+            else 100 - _pct(scope["closure_rate"].fillna(scope["closure_rate"].median()))
+        ),
+        "access": _safe_pct(0.6 * scope["transit_score"].fillna(0) + 0.4 * scope["facility_count"].fillna(0)),
+    }
+
+    weights = dict(_BASE_WEIGHTS)
+    if priority == "survival":
+        weights["stability"] *= 1.35
+    elif priority == "growth":
+        weights["perf"] *= 1.4
+
+    available = {k: v for k, v in components.items() if v is not None}
+    if not available:
+        raise ValueError("랭킹에 쓸 수 있는 지표가 하나도 없습니다 (데이터 부족).")
+    w_avail = {k: weights[k] for k in available}
+    total_w = sum(w_avail.values())
+    w_avail = {k: v / total_w for k, v in w_avail.items()}
+
+    stability_score = sum(w_avail[k] * available[k] for k in available).round(1)
+
+    out = scope[["district_code", "district_name"]].copy()
+    out["stability_score"] = stability_score
+    out["target_fit_score"] = demand.round(1)
+    # 예산 데이터가 없어 final_score = stability_score (§16 Budget Fit 항은 현재 미반영)
+    out["final_score"] = out["stability_score"]
+
+    n = len(scope)
+    breakdown_cols = {
+        k: (v.round(1).tolist() if v is not None else [None] * n) for k, v in components.items()
+    }
+    out["breakdown"] = [
+        {
+            "demand": breakdown_cols["demand"][i],
+            "competition": breakdown_cols["comp"][i],
+            "performance": breakdown_cols["perf"][i],
+            "access": breakdown_cols["access"][i],
+            "stability": breakdown_cols["stability"][i],
+        }
+        for i in range(n)
+    ]
+
+    out = out.sort_values("final_score", ascending=False).reset_index(drop=True)
+    out["rank"] = out.index + 1
+    out.attrs["missing_components"] = [k for k in components if k not in available]
+    return out, str(as_of)

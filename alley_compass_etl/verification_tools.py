@@ -371,7 +371,7 @@ def trend(
 DEMAND_COLUMNS = ["foot_traffic", "resident_population", "worker_population"]
 
 
-def _demand_series(frame: pd.DataFrame) -> tuple[pd.Series | None, list[str]]:
+def demand_series(frame: pd.DataFrame) -> tuple[pd.Series | None, list[str]]:
     """배후수요 = 유동인구 + 상주인구 + 직장인구.
 
     일부 컬럼이 없거나 비어 있으면 있는 것만 더하고, 실제로 사용한 컬럼을
@@ -435,7 +435,7 @@ def competition_density(
         "n_districts": len(scope),
     }
 
-    demand, used_columns = _demand_series(scope)
+    demand, used_columns = demand_series(scope)
 
     if demand is None:
         result.update({
