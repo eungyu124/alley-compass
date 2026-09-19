@@ -44,6 +44,28 @@ declare namespace kakao.maps {
     });
     setMap(map: Map | null): void;
   }
+  class CustomOverlay {
+    constructor(options: {
+      position: LatLng;
+      content: string | HTMLElement;
+      xAnchor?: number;
+      yAnchor?: number;
+      zIndex?: number;
+    });
+    setMap(map: Map | null): void;
+  }
+  class InfoWindow {
+    constructor(options: {
+      position?: LatLng;
+      content?: string | HTMLElement;
+      removable?: boolean;
+      zIndex?: number;
+    });
+    setPosition(position: LatLng): void;
+    setContent(content: string | HTMLElement): void;
+    open(map: Map): void;
+    close(): void;
+  }
   const event: {
     addListener: (target: unknown, type: string, handler: () => void) => void;
   };
