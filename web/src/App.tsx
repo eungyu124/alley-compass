@@ -4,6 +4,7 @@ import { AppHeader } from "@/components/AppHeader";
 import { AskPanel, type Message, type QuickAskAction } from "@/components/AskPanel";
 import { DataStatusCard } from "@/components/DataStatusCard";
 import { DistrictDrawer } from "@/components/detail/DistrictDrawer";
+import { OnboardingChat } from "@/components/OnboardingChat";
 import { RankList } from "@/components/RankList";
 import { ResultSummary } from "@/components/ResultSummary";
 import { SiteFooter } from "@/components/SiteFooter";
@@ -16,6 +17,7 @@ import {
 } from "@/data/businessTypes";
 import { ApiError, fetchBusinessTypes, fetchParseCondition, fetchRank } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
+import { loadConditions, saveConditions } from "@/lib/conditionsStorage";
 import { fmt } from "@/lib/format";
 import { b, type RichParts } from "@/lib/rich";
 import type { RankResponse } from "@/types/api";
@@ -33,28 +35,20 @@ import type { Conditions } from "@/types/domain";
  *   자연어 조건 파싱                       → Claude 구조화 출력 1회 (저렴)
  *   추천 이유 생성                        → 사용자가 버튼을 눌러야 (AI 호출 비용)
  *
- * 조건은 ConditionBar(드롭다운/슬라이더) 대신 자연어 문장 하나로 받는다.
- * AskPanel의 입력창 → /parse-condition 이 이전 조건과 함께 구조화하고,
- * 여기서 그 결과로 /rank 를 다시 부른다.
+ * 화면 흐름 (온보딩)
+ *   조건을 한 번도 입력한 적 없으면(onboarded=false) OnboardingChat을
+ *   화면 전체에 띄운다 — 랭킹도, 축소된 대화 패널도 아직 없다. 여기서
+ *   첫 조건이 확정되고 랭킹까지 성공하면 onboarded=true 로 바뀌면서
+ *   일반 레이아웃(랭킹 + 사이드바 AskPanel)으로 넘어간다.
+ *
+ *   그 뒤로 조건이 바뀔 때마다 conditionsStorage.ts를 통해 로그인 사용자별로
+ *   localStorage에 저장한다 — 다음 로그인부터는 이 온보딩 화면을 건너뛰고
+ *   저장된 조건으로 곧장 랭킹을 보여준다. 저장된 업종이 지금은 더 이상
+ *   수집돼 있지 않으면(bizOptions에 없으면) 신뢰하지 않고 다시 온보딩부터
+ *   시작한다 — 없는 데이터를 있는 것처럼 보여주지 않는다는 원칙과 같다.
  * ────────────────────────────────────────────────────────────── */
 
 const TOP_K = 20;
-
-function bootMessage(res: RankResponse): RichParts {
-  const lead = res.results[0];
-  if (!lead) return [`업종 "${res.business_name}"에 해당하는 상권 데이터가 없습니다.`];
-
-  return [
-    "서울 골목상권 ",
-    b(`${fmt(res.n_candidates)}곳`),
-    "을 조건에 맞춰 비교했습니다. ",
-    b(res.business_name),
-    " 기준 1위는 ",
-    b(lead.district_name),
-    `(생존 안정성 ${Math.round(lead.final_score)}점)입니다. 상권을 누르면 진단과 자세한 지표를 볼 수 있어요.`,
-    ...(res.warnings.length ? [" ", res.warnings.join(" ")] : []),
-  ];
-}
 
 function changeMessage(
   labelParts: RichParts,
@@ -95,8 +89,29 @@ function parseSummaryMessage(
   );
 }
 
+/** 온보딩의 첫 조건 확정 — 비교 대상(previousTopNames)이 없는 첫 랭킹이라 별도 문구를 쓴다. */
+function firstParseMessage(next: Conditions, bizLabel: string, res: RankResponse): RichParts {
+  const lead = res.results[0];
+  if (!lead) return [`업종 "${bizLabel}"에 해당하는 상권 데이터가 없습니다.`];
+
+  return [
+    "이해한 조건: ",
+    b(bizLabel),
+    ...(next.budget ? [` · 보증금 ${fmt(next.budget)}만원 이하`] : []),
+    ` · ${AGE_LABEL[next.age]} · ${CHARACTER_LABEL[next.character]} · ${PRIORITY_LABEL[next.priority]}. `,
+    "서울 골목상권 ",
+    b(`${fmt(res.n_candidates)}곳`),
+    "을 비교했습니다. 1위는 ",
+    b(lead.district_name),
+    `(생존 안정성 ${Math.round(lead.final_score)}점)입니다. 상권을 누르면 진단과 자세한 지표를 볼 수 있어요.`,
+    ...(res.warnings.length ? [" ", res.warnings.join(" ")] : []),
+  ];
+}
+
 export default function App() {
-  const { signOut } = useAuth();
+  const { signOut, user } = useAuth();
+  const userId = user?.id ?? null;
+
   const [bizOptions, setBizOptions] = useState<SelectOption[]>([]);
   const [conditions, setConditions] = useState<Conditions>(INITIAL_CONDITIONS);
   const [meta, setMeta] = useState<RankResponse | null>(null);
@@ -104,9 +119,10 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [selectedCode, setSelectedCode] = useState<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
+  /** 조건을 한 번이라도 확정해본 적 있는가. 저장된 조건이 있으면(복원) 곧바로 true. */
+  const [onboarded, setOnboarded] = useState(false);
 
   const messageId = useRef(0);
-  const booted = useRef(false);
 
   const say = useCallback((from: Message["from"], parts: RichParts) => {
     setMessages((prev) => [...prev, { id: messageId.current++, from, parts }]);
@@ -142,9 +158,13 @@ export default function App() {
     [handleError],
   );
 
-  /* 최초 진입 — 실제로 수집된 업종을 받아 그중 첫 업종으로 첫 랭킹을 돌린다.
-   * 업종 목록을 상수로 들고 있지 않는 이유: 아직 수집되지 않은 업종을
-   * 드롭다운에 보여주면 404 를 부르는 선택지를 사용자에게 내미는 셈이다. */
+  /* 최초 진입 — 실제로 수집된 업종 목록을 받는다. 업종을 상수로 들고 있지 않는
+   * 이유: 아직 수집되지 않은 업종을 보여주면 404 를 부르는 선택지를 사용자에게
+   * 내미는 셈이다.
+   *
+   * 저장된 조건이 있고 그 업종이 지금도 실제로 있으면 그대로 복원해 온보딩을
+   * 건너뛴다. 없으면(첫 로그인이거나, 저장된 업종이 더는 없으면) 온보딩부터
+   * 시작한다 — 업종을 미리 아무거나 골라두지 않고 사용자가 말해줄 때까지 기다린다. */
   const bootstrap = useCallback(() => {
     setLoading(true);
     setError(null);
@@ -154,30 +174,37 @@ export default function App() {
         const options = rows.map((r) => ({ value: r.business_code, label: r.business_name }));
         setBizOptions(options);
 
-        const first = options[0];
-        if (!first) {
-          setError(
-            "지금은 분석할 수 있는 업종이 없습니다. 잠시 후 다시 시도해 주세요.",
-          );
+        if (!options[0]) {
+          setError("지금은 분석할 수 있는 업종이 없습니다. 잠시 후 다시 시도해 주세요.");
           setLoading(false);
           return;
         }
 
-        const next = { ...INITIAL_CONDITIONS, biz: first.value };
-        setConditions(next);
-        runRank(next, (res) => {
-          if (booted.current) return;
-          booted.current = true;
-          say("bot", bootMessage(res));
-        });
+        const saved = userId ? loadConditions(userId) : null;
+        const restored = saved && options.some((o) => o.value === saved.biz) ? saved : null;
+
+        if (restored) {
+          setConditions(restored);
+          setOnboarded(true);
+          runRank(restored);
+        } else {
+          setLoading(false);
+        }
       })
       .catch((e: unknown) => {
         handleError(e);
         setLoading(false);
       });
-  }, [runRank, say, handleError]);
+  }, [runRank, userId, handleError]);
 
   useEffect(bootstrap, [bootstrap]);
+
+  /* 온보딩을 끝낸 뒤로는 조건이 바뀔 때마다(자연어 입력이든 칩이든) 사용자별로
+   * 기억해 둔다 — 다음 로그인부터 이 조건으로 곧장 시작하기 위해서다. */
+  useEffect(() => {
+    if (!onboarded || !userId) return;
+    saveConditions(userId, conditions);
+  }, [onboarded, userId, conditions]);
 
   const applyChange = (patch: Partial<Conditions>, labelParts: RichParts, userParts?: RichParts) => {
     const previousTopNames = (meta?.results ?? []).slice(0, 5).map((r) => r.district_name);
@@ -243,8 +270,9 @@ export default function App() {
     }
   };
 
-  /* 자연어 조건 입력 — ConditionBar를 대체한다. 직전 조건을 함께 보내므로
-   * 이번 문장에서 언급 안 한 필드는 backend가 그대로 유지해 돌려준다. */
+  /* 자연어 조건 입력 — OnboardingChat(첫 진입)과 AskPanel(그 이후) 모두 이 함수를
+   * 그대로 쓴다. 직전 조건을 함께 보내므로 이번 문장에서 언급 안 한 필드는
+   * backend가 그대로 유지해 돌려준다. */
   const handleParse = (message: string) => {
     say("user", [message]);
     setLoading(true);
@@ -262,8 +290,23 @@ export default function App() {
           return;
         }
 
+        const bizCode = parsed.business_code ?? conditions.biz;
+        if (!bizCode) {
+          // 온보딩 중 업종을 아직 한 번도 말하지 않은 경우 — 업종 없이는 /rank를
+          // 부를 수 없으므로(랭킹 대상이 없음) 여기서 멈추고 되묻는다.
+          setLoading(false);
+          say("bot", [
+            "어떤 업종을 준비하고 계신지 알려주시면 바로 찾아볼게요. 예: ",
+            b("치킨집"),
+            ", ",
+            b("카페"),
+            " 등",
+          ]);
+          return;
+        }
+
         const next: Conditions = {
-          biz: parsed.business_code ?? conditions.biz,
+          biz: bizCode,
           // budget 은 화면에서는 항상 숫자다(초기값 있음) — Claude가 언급 안 된 값을
           // 되돌려주지 못했을 때만 방어적으로 이전 값을 쓴다.
           budget: parsed.budget ?? conditions.budget,
@@ -272,15 +315,19 @@ export default function App() {
           priority: parsed.priority,
         };
         const bizLabel =
-          parsed.business_name ??
-          bizOptions.find((o) => o.value === next.biz)?.label ??
-          next.biz;
+          parsed.business_name ?? bizOptions.find((o) => o.value === bizCode)?.label ?? bizCode;
+        const wasOnboarded = onboarded;
         const previousTopNames = (meta?.results ?? []).slice(0, 5).map((r) => r.district_name);
 
         setConditions(next);
-        runRank(next, (res) =>
-          say("bot", parseSummaryMessage(next, bizLabel, previousTopNames, res)),
-        );
+        runRank(next, (res) => {
+          if (!wasOnboarded) {
+            setOnboarded(true);
+            say("bot", firstParseMessage(next, bizLabel, res));
+          } else {
+            say("bot", parseSummaryMessage(next, bizLabel, previousTopNames, res));
+          }
+        });
       })
       .catch((e: unknown) => {
         handleError(e);
@@ -309,6 +356,13 @@ export default function App() {
                 </Button>
               </CardBody>
             </Card>
+          ) : !onboarded ? (
+            <OnboardingChat
+              messages={messages}
+              onParse={handleParse}
+              busy={loading}
+              bootLoading={bizOptions.length === 0}
+            />
           ) : (
             <>
               <ResultSummary meta={meta} loading={loading} conditions={conditions} />
