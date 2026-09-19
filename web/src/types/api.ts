@@ -162,3 +162,32 @@ export interface BusinessTypeOut {
   business_code: string;
   business_name: string;
 }
+
+/* ── 자연어 조건 파서 (POST /parse-condition) ────────────────────
+ * ConditionBar 를 대체하는 대화형 입력. previous 를 같이 보내면
+ * 문장에서 언급 안 한 필드는 그대로 유지된다. */
+
+export interface ConditionState {
+  business_code: string | null;
+  budget: number | null;
+  age: AgeTarget;
+  character: MarketCharacter;
+  priority: Priority;
+}
+
+export interface ParseConditionRequest {
+  message: string;
+  previous: ConditionState;
+}
+
+export interface ParseConditionResponse {
+  business_code: string | null;
+  /** business_code 를 실제 업종명으로 바꾼 값. 참고용. */
+  business_name: string | null;
+  /** 목록에 없는 업종을 말했을 때 그 이름. 있으면 안내 문구를 띄운다. */
+  business_not_found: string | null;
+  budget: number | null;
+  age: AgeTarget;
+  character: MarketCharacter;
+  priority: Priority;
+}

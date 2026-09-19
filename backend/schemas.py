@@ -86,6 +86,39 @@ class AgentResponse(BaseModel):
     risk: list[VerifiedClaimOut]
 
 
+# ── 자연어 조건 파서 (POST /parse-condition) ────────────────────
+# ConditionBar를 대체하는 대화형 입력. 직전 조건(previous)을 같이 보내면
+# 문장에서 언급 안 한 필드는 그대로 유지된다 (매번 새로 파싱하지 않음).
+
+
+class ConditionState(BaseModel):
+    """직전 턴의 조건. 첫 대화면 전부 비워서(business_code=None 등) 보낸다."""
+
+    business_code: Optional[str] = None
+    budget: Optional[float] = None
+    age: Literal["20", "30", "both"] = "both"
+    character: Literal["foot", "resident", "worker", "campus"] = "foot"
+    priority: Literal["survival", "cost", "growth"] = "survival"
+
+
+class ParseConditionRequest(BaseModel):
+    message: str = Field(description="사용자가 입력한 자유 문장")
+    previous: ConditionState = Field(default_factory=ConditionState)
+
+
+class ParseConditionResponse(BaseModel):
+    business_code: Optional[str] = None
+    business_name: Optional[str] = Field(
+        default=None, description="business_code를 실제 업종명으로 변환한 값. 참고용"
+    )
+    """사용자가 언급했지만 수집된 업종 목록에 없는 이름. 있으면 프론트가 안내 문구를 띄운다."""
+    business_not_found: Optional[str] = None
+    budget: Optional[float] = None
+    age: Literal["20", "30", "both"] = "both"
+    character: Literal["foot", "resident", "worker", "campus"] = "foot"
+    priority: Literal["survival", "cost", "growth"] = "survival"
+
+
 # ── 상세 지표 (GET /districts/{code}/detail) ────────────────────
 # 프론트의 상권 진단·차트가 쓰는 값. 전부 backend/detail.py 가 결정론적으로
 # 집계한다 — 백분위 정의를 verification_tools.percentile() 하나로 유지하기

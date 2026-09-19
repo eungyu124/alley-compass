@@ -2,7 +2,6 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import { AppHeader } from "@/components/AppHeader";
 import { AskPanel, type Message, type QuickAskAction } from "@/components/AskPanel";
-import { ConditionBar } from "@/components/ConditionBar";
 import { DataStatusCard } from "@/components/DataStatusCard";
 import { DistrictDrawer } from "@/components/detail/DistrictDrawer";
 import { RankList } from "@/components/RankList";
@@ -15,7 +14,7 @@ import {
   INITIAL_CONDITIONS,
   PRIORITY_LABEL,
 } from "@/data/businessTypes";
-import { ApiError, fetchBusinessTypes, fetchRank } from "@/lib/api";
+import { ApiError, fetchBusinessTypes, fetchParseCondition, fetchRank } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import { fmt } from "@/lib/format";
 import { b, type RichParts } from "@/lib/rich";
@@ -30,12 +29,15 @@ import type { Conditions } from "@/types/domain";
  * verification_tools.py 의 판정이 어긋나지 않기 때문이다.
  *
  * 호출 정책
- *   업종·연령·성격·우선순위 변경 → 즉시 /rank 재호출
- *   예산 슬라이더               → 500ms 디바운스 (드래그 중 매 프레임 호출 방지)
- *   추천 이유 생성              → 사용자가 버튼을 눌러야 (AI 호출 비용)
+ *   조건 변경(자연어 입력 · 대화형 재탐색 칩) → 즉시 /rank 재호출
+ *   자연어 조건 파싱                       → Claude 구조화 출력 1회 (저렴)
+ *   추천 이유 생성                        → 사용자가 버튼을 눌러야 (AI 호출 비용)
+ *
+ * 조건은 ConditionBar(드롭다운/슬라이더) 대신 자연어 문장 하나로 받는다.
+ * AskPanel의 입력창 → /parse-condition 이 이전 조건과 함께 구조화하고,
+ * 여기서 그 결과로 /rank 를 다시 부른다.
  * ────────────────────────────────────────────────────────────── */
 
-const BUDGET_DEBOUNCE_MS = 500;
 const TOP_K = 20;
 
 function bootMessage(res: RankResponse): RichParts {
@@ -74,6 +76,25 @@ function changeMessage(
   ];
 }
 
+/** 자연어 문장을 파싱한 뒤 — "이렇게 이해했다"를 먼저 확인시키고 재랭킹 결과를 잇는다. */
+function parseSummaryMessage(
+  next: Conditions,
+  bizLabel: string,
+  previousTopNames: readonly string[],
+  res: RankResponse,
+): RichParts {
+  return changeMessage(
+    [
+      "이해한 조건: ",
+      b(bizLabel),
+      ...(next.budget ? [` · 보증금 ${fmt(next.budget)}만원 이하`] : []),
+      ` · ${AGE_LABEL[next.age]} · ${CHARACTER_LABEL[next.character]} · ${PRIORITY_LABEL[next.priority]}.`,
+    ],
+    previousTopNames,
+    res,
+  );
+}
+
 export default function App() {
   const { signOut } = useAuth();
   const [bizOptions, setBizOptions] = useState<SelectOption[]>([]);
@@ -85,7 +106,6 @@ export default function App() {
   const [messages, setMessages] = useState<Message[]>([]);
 
   const messageId = useRef(0);
-  const budgetTimer = useRef<number | undefined>(undefined);
   const booted = useRef(false);
 
   const say = useCallback((from: Message["from"], parts: RichParts) => {
@@ -159,8 +179,6 @@ export default function App() {
 
   useEffect(bootstrap, [bootstrap]);
 
-  useEffect(() => () => window.clearTimeout(budgetTimer.current), []);
-
   const applyChange = (patch: Partial<Conditions>, labelParts: RichParts, userParts?: RichParts) => {
     const previousTopNames = (meta?.results ?? []).slice(0, 5).map((r) => r.district_name);
     const next = { ...conditions, ...patch };
@@ -168,15 +186,6 @@ export default function App() {
     setConditions(next);
     if (userParts) say("user", userParts);
     runRank(next, (res) => say("bot", changeMessage(labelParts, previousTopNames, res)));
-  };
-
-  /* 슬라이더는 드래그 중 값이 연속으로 바뀐다. 매번 부르면 서버가 같은 계산을
-   * 수십 번 하므로, 손이 멈춘 뒤에만 호출한다. 대화 로그도 남기지 않는다. */
-  const handleBudgetChange = (budget: number) => {
-    const next = { ...conditions, budget };
-    setConditions(next);
-    window.clearTimeout(budgetTimer.current);
-    budgetTimer.current = window.setTimeout(() => runRank(next), BUDGET_DEBOUNCE_MS);
   };
 
   const handleReset = () => {
@@ -228,7 +237,55 @@ export default function App() {
           ["조용한 주거 배후가 좋아"],
         );
         break;
+      case "reset":
+        handleReset();
+        break;
     }
+  };
+
+  /* 자연어 조건 입력 — ConditionBar를 대체한다. 직전 조건을 함께 보내므로
+   * 이번 문장에서 언급 안 한 필드는 backend가 그대로 유지해 돌려준다. */
+  const handleParse = (message: string) => {
+    say("user", [message]);
+    setLoading(true);
+
+    fetchParseCondition(message, conditions)
+      .then((parsed) => {
+        if (parsed.business_not_found) {
+          setLoading(false);
+          const available = bizOptions.map((o) => o.label).join(", ") || "아직 없음";
+          say("bot", [
+            `"${parsed.business_not_found}"은(는) 아직 수집된 업종이 아니에요. 지금 볼 수 있는 업종은 `,
+            b(available),
+            "입니다.",
+          ]);
+          return;
+        }
+
+        const next: Conditions = {
+          biz: parsed.business_code ?? conditions.biz,
+          // budget 은 화면에서는 항상 숫자다(초기값 있음) — Claude가 언급 안 된 값을
+          // 되돌려주지 못했을 때만 방어적으로 이전 값을 쓴다.
+          budget: parsed.budget ?? conditions.budget,
+          age: parsed.age,
+          character: parsed.character,
+          priority: parsed.priority,
+        };
+        const bizLabel =
+          parsed.business_name ??
+          bizOptions.find((o) => o.value === next.biz)?.label ??
+          next.biz;
+        const previousTopNames = (meta?.results ?? []).slice(0, 5).map((r) => r.district_name);
+
+        setConditions(next);
+        runRank(next, (res) =>
+          say("bot", parseSummaryMessage(next, bizLabel, previousTopNames, res)),
+        );
+      })
+      .catch((e: unknown) => {
+        handleError(e);
+        setLoading(false);
+      });
   };
 
   const ranking = meta?.results ?? [];
@@ -238,34 +295,6 @@ export default function App() {
     <>
       <div className="flex min-h-screen flex-col">
         <AppHeader />
-
-        <ConditionBar
-          conditions={conditions}
-          bizOptions={bizOptions}
-          onBizChange={(biz) => {
-            const label = bizOptions.find((o) => o.value === biz)?.label ?? biz;
-            applyChange({ biz }, ["업종을 ", b(label), "(으)로 바꿨습니다."]);
-          }}
-          onBudgetChange={handleBudgetChange}
-          onAgeChange={(age) =>
-            applyChange({ age }, ["타깃 연령을 ", b(AGE_LABEL[age]), "(으)로 바꿨습니다."])
-          }
-          onCharacterChange={(character) =>
-            applyChange({ character }, [
-              "상권 성격을 ",
-              b(CHARACTER_LABEL[character]),
-              "(으)로 바꿨습니다.",
-            ])
-          }
-          onPriorityChange={(priority) =>
-            applyChange({ priority }, [
-              "우선순위를 ",
-              b(PRIORITY_LABEL[priority]),
-              "(으)로 바꿨습니다.",
-            ])
-          }
-          onReset={handleReset}
-        />
 
         <main className="mx-auto w-full max-w-[86rem] flex-1 px-4 py-6 sm:px-6">
           {error ? (
@@ -282,7 +311,7 @@ export default function App() {
             </Card>
           ) : (
             <>
-              <ResultSummary meta={meta} loading={loading} />
+              <ResultSummary meta={meta} loading={loading} conditions={conditions} />
 
               <div className="mt-5 grid gap-5 lg:grid-cols-12">
                 <div className="lg:col-span-8">
@@ -299,6 +328,7 @@ export default function App() {
                   <AskPanel
                     messages={messages}
                     onAsk={handleAsk}
+                    onParse={handleParse}
                     businessTypeCount={bizOptions.length}
                     busy={loading}
                   />

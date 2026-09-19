@@ -39,6 +39,7 @@ from fastapi import Depends, FastAPI, HTTPException  # noqa: E402
 from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
 from fastapi.responses import Response  # noqa: E402
 
+from condition_parser import parse_condition  # noqa: E402
 from fact_sheet import build_fact_sheet  # noqa: E402
 from narrative_agents import DEFAULT_MODEL, generate_recommendation, generate_risk, verify_and_correct  # noqa: E402
 from verification_tools import ToolError, get_supabase_client, load_feature_frame, log  # noqa: E402
@@ -52,6 +53,8 @@ from schemas import (  # noqa: E402
     AgentResponse,
     DetailResponse,
     DistrictScore,
+    ParseConditionRequest,
+    ParseConditionResponse,
     RankRequest,
     RankResponse,
     ReportRequest,
@@ -193,6 +196,52 @@ def business_types(_user: CurrentUser = Depends(require_user)) -> list[dict]:
     df = get_frame()
     rows = df[["business_code", "business_name"]].dropna().drop_duplicates().sort_values("business_name")
     return rows.to_dict(orient="records")
+
+
+@app.post("/parse-condition", response_model=ParseConditionResponse)
+def parse_condition_endpoint(
+    req: ParseConditionRequest,
+    _user: CurrentUser = Depends(require_user),
+) -> ParseConditionResponse:
+    """ConditionBar를 대체하는 자연어 입력. PRD F-12 대화형 재탐색.
+
+    직전 조건(req.previous)을 같이 보내면 이번 문장에서 언급 안 한 필드는
+    그대로 유지된다 — 매번 처음부터 다시 묻지 않는다. business_code는
+    Claude가 뭐라 답하든 실제 수집된 업종 목록으로 다시 확인한다
+    (condition_parser.parse_condition 안에서 처리).
+    """
+    df = get_frame()
+    businesses = (
+        df[["business_code", "business_name"]]
+        .dropna()
+        .drop_duplicates()
+        .to_dict(orient="records")
+    )
+
+    client = anthropic.Anthropic()
+    try:
+        parsed = parse_condition(client, req.message, req.previous.model_dump(), businesses)
+    except anthropic.AuthenticationError as exc:
+        raise HTTPException(status_code=500, detail="ANTHROPIC_API_KEY가 설정되지 않았거나 잘못됐습니다.") from exc
+    except anthropic.RateLimitError as exc:
+        raise HTTPException(status_code=429, detail=f"Claude API rate limit: {exc}") from exc
+    except anthropic.APIStatusError as exc:
+        raise HTTPException(status_code=502, detail=f"Claude API 오류 ({exc.status_code}): {exc.message}") from exc
+
+    business_name = None
+    if parsed.business_code is not None:
+        match = df.loc[df["business_code"] == parsed.business_code, "business_name"]
+        business_name = match.iloc[0] if not match.empty else None
+
+    return ParseConditionResponse(
+        business_code=parsed.business_code,
+        business_name=business_name,
+        business_not_found=parsed.business_not_found,
+        budget=parsed.budget,
+        age=parsed.age,
+        character=parsed.character,
+        priority=parsed.priority,
+    )
 
 
 @app.get("/districts")

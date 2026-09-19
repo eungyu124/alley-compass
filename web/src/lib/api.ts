@@ -2,6 +2,8 @@ import type {
   AgentResponse,
   BusinessTypeOut,
   DetailResponse,
+  ParseConditionRequest,
+  ParseConditionResponse,
   RankRequest,
   RankResponse,
 } from "@/types/api";
@@ -124,5 +126,32 @@ export function fetchAgents(
       character: conditions.character,
       priority: conditions.priority,
     }),
+  });
+}
+
+/**
+ * 자연어 조건 파서 — ConditionBar 를 대체하는 대화형 입력.
+ * conditions 를 previous 로 함께 보내면 이번 문장에서 언급 안 한 필드는
+ * 그대로 유지된다(매번 새로 묻지 않는다). 텍스트 한두 문장짜리 호출이라
+ * 추천/리포트 생성보다 훨씬 저렴하다.
+ */
+export function fetchParseCondition(
+  message: string,
+  conditions: Conditions,
+): Promise<ParseConditionResponse> {
+  const body: ParseConditionRequest = {
+    message,
+    previous: {
+      business_code: conditions.biz || null,
+      budget: conditions.budget,
+      age: conditions.age,
+      character: conditions.character,
+      priority: conditions.priority,
+    },
+  };
+
+  return request<ParseConditionResponse>("/parse-condition", {
+    method: "POST",
+    body: JSON.stringify(body),
   });
 }
