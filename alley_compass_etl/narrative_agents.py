@@ -42,7 +42,7 @@ from pydantic import BaseModel, Field
 from fact_sheet import Fact, render_fact_sheet
 from verification_tools import assertion_validator
 
-DEFAULT_MODEL = "claude-opus-5"
+DEFAULT_MODEL = "claude-sonnet-5"
 
 Stance = Literal["recommend", "risk"]
 
