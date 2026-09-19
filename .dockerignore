@@ -1,0 +1,14 @@
+# 백엔드 Docker 이미지에 안 들어가도 되는 것들 — 빌드 컨텍스트를 줄여
+# 업로드·빌드를 빠르게 한다. 비밀 파일(.env)과 캐시 데이터는 애초에
+# gitignore 대상이라 저장소에 없지만, 로컬에서 직접 빌드할 때를 대비해 명시한다.
+.git
+web/
+docs/
+ml/
+db/
+*.env
+alley_compass_etl/data/
+alley_compass_etl/__pycache__/
+backend/__pycache__/
+**/__pycache__/
+**/*.pyc

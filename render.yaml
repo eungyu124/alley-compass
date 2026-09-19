@@ -1,0 +1,33 @@
+# Render Blueprint — 백엔드 배포 설정을 코드로 남겨둔다.
+# 대시보드에서 "New +" → "Blueprint" → 이 저장소를 고르면 이 파일대로 서비스가 만들어진다.
+# (수동으로 "Web Service"를 만들어도 되고, 그때도 이 값들을 그대로 참고하면 된다.)
+#
+# sync: false 인 값들은 비밀값이거나 환경마다 달라서 render.yaml에 실제 값을
+# 넣지 않는다 — Render 대시보드의 Environment 탭에서 직접 채운다.
+services:
+  - type: web
+    name: alley-compass-backend
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    plan: free
+    healthCheckPath: /health
+    envVars:
+      # alley_compass_etl/.env 에 있는 값과 동일하게 채운다.
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SECRET_KEY
+        sync: false
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      # Supabase 프로젝트가 아직 HS256(구형) 토큰을 쓰면 채운다. 신형(JWKS)이면
+      # 비워 둬도 된다 — backend/auth.py가 SUPABASE_URL의 JWKS를 우선 시도한다.
+      - key: SUPABASE_JWT_SECRET
+        sync: false
+      # 로컬 CSV가 아니라 Supabase district_features를 읽는다(운영 데이터).
+      - key: BACKEND_USE_SUPABASE
+        value: "true"
+      # 실제 배포 도메인들(쉼표로 여러 개 가능). 비밀값이 아니라 여기 그대로
+      # 적는다 — 로컬 개발용 localhost:5173도 같이 열어둔다.
+      - key: CORS_ORIGINS
+        value: "https://alley-compass.vercel.app,http://localhost:5173"

@@ -25,6 +25,38 @@ BACKEND_USE_SUPABASE=true
 
 http://localhost:8000/docs 에서 Swagger UI로 바로 테스트 가능.
 
+## 배포 (Render)
+
+Vercel(프론트)과 별개로 백엔드는 Render에 Docker로 올린다. Vercel의 기본
+Python 서버리스 런타임은 `report.py`가 쓰는 WeasyPrint(Pango/Cairo 같은 OS
+라이브러리 필요)를 못 다뤄서, Dockerfile로 apt 패키지까지 직접 설치하는
+쪽으로 갔다. 저장소 루트의 `Dockerfile`/`.dockerignore`/`render.yaml`이 이
+설정이다(빌드 컨텍스트가 루트인 이유: `alley_compass_etl/`이 `backend/`의
+형제 디렉터리라 같이 COPY해야 함).
+
+1. Render 대시보드 → **New +** → **Blueprint** → 이 GitHub 저장소 선택
+   (`render.yaml`을 그대로 읽어 서비스를 만든다). 수동으로 **Web Service**를
+   만들어도 되는데, 그때는 Runtime을 **Docker**로, Dockerfile 경로를
+   `./Dockerfile`로 지정한다.
+2. 생성된 서비스의 **Environment** 탭에서 값을 채운다 (`alley_compass_etl/.env`
+   와 같은 값):
+   - `SUPABASE_URL`, `SUPABASE_SECRET_KEY`, `ANTHROPIC_API_KEY`
+   - `BACKEND_USE_SUPABASE=true` (render.yaml에 이미 있음)
+   - `CORS_ORIGINS` — 실제 프론트 도메인(쉼표로 여러 개 가능). render.yaml에
+     기본값이 있지만 배포 주소가 바뀌면 여기서 갱신한다.
+   - (신형 Supabase 프로젝트면 필요 없음) `SUPABASE_JWT_SECRET` — 구형
+     HS256 토큰을 쓰는 프로젝트만.
+3. 배포 후 `https://<서비스명>.onrender.com/health`가 `{"status":"ok", ...}`를
+   주는지 확인한다.
+4. **프론트에도 반영**: `web/`을 배포한 Vercel 프로젝트의 Environment
+   Variables에서 `VITE_API_BASE_URL`을 이 Render 주소로 바꾸고 Redeploy한다
+   (Vite 환경변수는 빌드 시점에 번들에 박히므로 값만 바꾸고 재배포 안 하면
+   반영되지 않는다).
+
+**무료 요금제 주의**: Render 무료 플랜은 15분 동안 요청이 없으면 컨테이너를
+재운다. 다시 요청이 오면 깨우는 데 30초~1분 정도 걸린다(콜드 스타트) —
+시연·심사 직전에 한 번 `/health`를 미리 호출해 깨워 두면 좋다.
+
 ## 엔드포인트
 
 | | | 비용 |
