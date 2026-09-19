@@ -833,7 +833,7 @@ def select_all(
     table: str,
     columns: str,
     page_size: int = 1000,
-    max_workers: int = 12,
+    max_workers: int = 6,
 ) -> list[dict[str, Any]]:
     """전체 행을 id 구간별로 나눠 병렬 조회한다.
 
@@ -846,8 +846,13 @@ def select_all(
     대신 id(bigint identity, 기본키) 구간으로 나눠서 각 구간을 gt/lte
     범위 조건으로 직접 조회한다 — 인덱스로 바로 찾아가므로 구간 위치와
     무관하게 빠르고, 구간마다 완전히 독립적이라 동시에 여러 개를 보내도
-    안전하다. 그래도 개별 구간 조회가 이따금 실패할 수 있어(일시적 부하 등)
-    구간마다 짧게 재시도한다.
+    안전하다.
+
+    max_workers를 낮게 잡은 이유: Render 무료 플랜처럼 CPU가 아주 약한
+    환경(사실상 0.1 vCPU급)에서는 너무 많은 스레드가 서로 자원을 다투다가
+    개별 요청이 오히려 statement_timeout을 넘기는 걸 실제로 겪었다(로컬
+    macOS에선 12로도 문제없었지만 Render에서는 실패했다). 재시도 횟수와
+    대기 시간도 그래서 넉넉히 뒀다.
     """
     probe = (
         supabase.table(table)
@@ -864,7 +869,7 @@ def select_all(
     n_chunks = max(1, math.ceil(max_id / page_size))
     bounds = [(i * page_size, min((i + 1) * page_size, max_id)) for i in range(n_chunks)]
 
-    def fetch_chunk(bound: tuple[int, int], retries: int = 3) -> list[dict[str, Any]]:
+    def fetch_chunk(bound: tuple[int, int], retries: int = 5) -> list[dict[str, Any]]:
         lo, hi = bound
         for attempt in range(retries):
             try:
@@ -879,7 +884,7 @@ def select_all(
             except Exception:  # noqa: BLE001 — 일시적 부하 등, 마지막 시도면 그대로 올린다
                 if attempt == retries - 1:
                     raise
-                time.sleep(0.5 * (attempt + 1))
+                time.sleep(min(1.5 * (attempt + 1), 6.0))
         return []  # 도달하지 않음(mypy 안심용)
 
     result: list[dict[str, Any]] = []

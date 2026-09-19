@@ -102,9 +102,7 @@ def get_frame(refresh: bool = False) -> pd.DataFrame:
         try:
             _FRAME_CACHE = load_feature_frame(use_supabase=_USE_SUPABASE)
         except ToolError as exc:
-            # 데이터가 아직 없는 상태(ETL 미실행 · Supabase 미적재)를 500 으로 두면
-            # CORS 헤더도 빠져서 브라우저는 원인 문구를 읽지 못한다. 503 + 사유로 돌려
-            # 화면이 무엇을 해야 하는지 그대로 보여주게 한다.
+            # 데이터가 아직 없는 상태(ETL 미실행 · Supabase 미적재).
             source = "Supabase district_features" if _USE_SUPABASE else "로컬 CSV"
             log(f"district_features 로드 실패 ({source}): {exc}")
             raise HTTPException(
@@ -115,8 +113,48 @@ def get_frame(refresh: bool = False) -> pd.DataFrame:
                     ".env 에 BACKEND_USE_SUPABASE=true 를 설정하세요."
                 ),
             ) from exc
+        except Exception as exc:  # noqa: BLE001 — Supabase 쪽 일시적 오류(타임아웃 등)
+            # 위 ToolError는 "설정이 안 됐다"는 뜻이고, 이건 "설정은 맞는데 이번
+            # 조회가 일시적으로 실패했다"는 뜻이다(예: Supabase statement timeout).
+            # 500/502를 그대로 흘리면 CORS 헤더도 없이 죽어서 브라우저가 원인
+            # 문구를 못 읽는다 — 503 + 재시도 안내로 감싼다.
+            log(f"district_features 로드 중 일시적 오류: {exc}")
+            raise HTTPException(
+                status_code=503,
+                detail="상권 데이터를 불러오는 중 일시적인 오류가 발생했습니다. 잠시 후 다시 시도해 주세요.",
+            ) from exc
         log(f"district_features 로드: {len(_FRAME_CACHE):,}행 (source={'supabase' if _USE_SUPABASE else 'csv'})")
     return _FRAME_CACHE
+
+
+_BUSINESS_TYPES_CACHE: pd.DataFrame | None = None
+
+
+def get_business_types(refresh: bool = False) -> pd.DataFrame:
+    """business_code/business_name 목록만 필요할 때 쓴다.
+
+    Supabase 모드에서는 business_types 테이블(현재 6행)만 직접 조회한다.
+    이 목록 하나 뽑자고 district_features(10만 행 이상)를 통째로 캐싱하는
+    get_frame()을 부를 이유가 없다 — 대량 테이블 조회는 그 자체로 느리고
+    (Render 무료 플랜의 제한된 CPU에서는 Supabase statement timeout까지
+    난 적이 있다), /business-types·/parse-condition처럼 자주·가볍게 불리는
+    엔드포인트를 매번 그 비용에 묶어 둘 필요가 없다.
+
+    로컬 CSV 모드는 별도 마스터 테이블이 없으므로 기존처럼 캐시된
+    feature 프레임에서 뽑는다(로컬 CSV는 어차피 가벼워 문제되지 않는다).
+    """
+    global _BUSINESS_TYPES_CACHE
+    if _BUSINESS_TYPES_CACHE is None or refresh:
+        if _USE_SUPABASE:
+            supabase = get_supabase_client()
+            rows = supabase.table("business_types").select("business_code,business_name").execute().data or []
+            _BUSINESS_TYPES_CACHE = pd.DataFrame(rows)
+        else:
+            _BUSINESS_TYPES_CACHE = get_frame()[["business_code", "business_name"]]
+        _BUSINESS_TYPES_CACHE = (
+            _BUSINESS_TYPES_CACHE.dropna().drop_duplicates().sort_values("business_name").reset_index(drop=True)
+        )
+    return _BUSINESS_TYPES_CACHE
 
 
 def _condition_text(req: RankRequest | AgentRequest | ReportRequest) -> str:
@@ -210,9 +248,7 @@ def health() -> dict:
 
 @app.get("/business-types")
 def business_types(_user: CurrentUser = Depends(require_user)) -> list[dict]:
-    df = get_frame()
-    rows = df[["business_code", "business_name"]].dropna().drop_duplicates().sort_values("business_name")
-    return rows.to_dict(orient="records")
+    return get_business_types().to_dict(orient="records")
 
 
 @app.post("/parse-condition", response_model=ParseConditionResponse)
@@ -227,13 +263,8 @@ def parse_condition_endpoint(
     Claude가 뭐라 답하든 실제 수집된 업종 목록으로 다시 확인한다
     (condition_parser.parse_condition 안에서 처리).
     """
-    df = get_frame()
-    businesses = (
-        df[["business_code", "business_name"]]
-        .dropna()
-        .drop_duplicates()
-        .to_dict(orient="records")
-    )
+    biz_df = get_business_types()
+    businesses = biz_df.to_dict(orient="records")
 
     client = anthropic.Anthropic()
     try:
@@ -247,7 +278,7 @@ def parse_condition_endpoint(
 
     business_name = None
     if parsed.business_code is not None:
-        match = df.loc[df["business_code"] == parsed.business_code, "business_name"]
+        match = biz_df.loc[biz_df["business_code"] == parsed.business_code, "business_name"]
         business_name = match.iloc[0] if not match.empty else None
 
     return ParseConditionResponse(
