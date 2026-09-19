@@ -25,7 +25,7 @@
 | DB 스키마 | ✅ 작성 완료 (Supabase 수동 적용, v1.2 service_role 패치 포함) | [`db/schema_v1.1.sql`](db/schema_v1.1.sql) |
 | 데이터 수집 파이프라인 (ETL) | ✅ 동작 | [`alley_compass_etl/`](alley_compass_etl/) |
 | 검증 Tool 6종 | ✅ 동작 (LLM 미사용, 결정론적) | [`alley_compass_etl/verification_tools.py`](alley_compass_etl/verification_tools.py) |
-| Claude 에이전트 3종 | ⚠️ 구현 완료, **실제 API 응답 미검증** (계정 크레딧 필요) | [`alley_compass_etl/narrative_agents.py`](alley_compass_etl/narrative_agents.py), [`fact_sheet.py`](alley_compass_etl/fact_sheet.py), [`pipeline.py`](alley_compass_etl/pipeline.py) |
+| Claude 에이전트 3종 | ✅ 동작 (Sonnet 5, 라이브 검증 완료) | [`alley_compass_etl/narrative_agents.py`](alley_compass_etl/narrative_agents.py), [`fact_sheet.py`](alley_compass_etl/fact_sheet.py), [`pipeline.py`](alley_compass_etl/pipeline.py) |
 | 웹 프론트 | ⚠️ 화면 완성, **데이터는 목업** | [`web/`](web/) |
 | FastAPI 백엔드 | ⚠️ 동작 (`/rank`, `/districts/{code}/agents`), **랭킹은 아직 휴리스틱** | [`backend/`](backend/) |
 | LightGBM 예측 모델 | ⚠️ 학습 파이프라인 완성, **실제 다분기 데이터로 학습 전** (합성 데이터로 배관만 검증) | [`ml/`](ml/) |
@@ -33,10 +33,11 @@
 **화면에 보이는 숫자는 아직 전부 목업이다.** 실데이터를 흘리려면 서울 열린데이터광장
 API 키와 Supabase 프로젝트가 필요하다 (아래 빠른 시작 참고).
 
-- **Claude 에이전트 3종**: 코드·구조·검증 로직까지 다 구현되어 있고 결정론적 부분
-  (Fact Sheet 생성)은 실제 데이터로 확인됐지만, Claude API 호출 자체는 계정에
-  크레딧이 없어 아직 라이브로 못 돌려봤다 — 크레딧 채운 뒤
-  `python alley_compass_etl/pipeline.py` 로 확인.
+- **Claude 에이전트 3종**: `claude-sonnet-5`로 라이브 검증 완료 —
+  `python alley_compass_etl/pipeline.py` 실행 결과 추천 근거 3개·반대 근거
+  3개 전부 1차 생성에서 검증 통과(정정 0건). Opus 대신 Sonnet을 쓴 이유:
+  Fact를 문장으로 옮기는 작업이라 어려운 추론이 필요 없고, Verification
+  Agent가 어차피 수치를 재검증하는 안전망이 있어 비용(1/2.5)을 아꼈다.
 - **LightGBM**: `alley_compass_etl.py`로 아직 1개 분기(20251)만 받아둔 상태라
   PRD §15의 Temporal Split(과거 학습 → 미래 검증)을 할 수 있는 다분기 데이터가
   없다. `ml/train.py --synthetic`으로 배관(라벨링·분할·학습·평가지표)이 실제로
