@@ -51,7 +51,8 @@ import type { Conditions } from "@/types/domain";
 
 const TOP_K = 20;
 /** 처음엔 5곳만 보여주고, "더보기"를 누를 때마다 이만큼씩 더 펼친다.
- * 서버는 이미 TOP_K(20)까지 계산해서 내려주므로 재호출 없이 펼치기만 하면 된다. */
+ * 다 펼친 뒤엔 같은 버튼이 "접기"로 바뀌어 다시 5곳으로 되돌린다.
+ * 서버는 이미 TOP_K(20)까지 계산해서 내려주므로 재호출 없이 펼치고 접는다. */
 const INITIAL_VISIBLE = 5;
 const VISIBLE_STEP = 5;
 
@@ -394,14 +395,20 @@ export default function App() {
                     onSelect={setSelectedCode}
                     loading={loading}
                   />
-                  {!loading && visibleCount < ranking.length ? (
+                  {!loading && ranking.length > INITIAL_VISIBLE ? (
                     <Button
                       variant="outline"
                       size="sm"
                       className="self-center"
-                      onClick={() => setVisibleCount((c) => Math.min(c + VISIBLE_STEP, ranking.length))}
+                      onClick={() =>
+                        setVisibleCount((c) =>
+                          c < ranking.length ? Math.min(c + VISIBLE_STEP, ranking.length) : INITIAL_VISIBLE,
+                        )
+                      }
                     >
-                      더보기 ({ranking.length - visibleCount}곳 더)
+                      {visibleCount < ranking.length
+                        ? `더보기 (${ranking.length - visibleCount}곳 더)`
+                        : "접기"}
                     </Button>
                   ) : null}
                 </div>
