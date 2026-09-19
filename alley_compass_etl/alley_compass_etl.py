@@ -29,6 +29,7 @@ import math
 import os
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
@@ -832,22 +833,59 @@ def select_all(
     table: str,
     columns: str,
     page_size: int = 1000,
+    max_workers: int = 12,
 ) -> list[dict[str, Any]]:
-    result: list[dict[str, Any]] = []
-    start = 0
+    """전체 행을 id 구간별로 나눠 병렬 조회한다.
 
-    while True:
-        resp = (
-            supabase.table(table)
-            .select(columns)
-            .range(start, start + page_size - 1)
-            .execute()
-        )
-        data = resp.data or []
-        result.extend(data)
-        if len(data) < page_size:
-            break
-        start += page_size
+    처음엔 OFFSET(.range())으로 페이지를 나눠 순서대로(또는 동시에) 요청했는데,
+    district_features(14만 행 이상)에서 실제로 문제가 났다 — OFFSET이 깊어질수록
+    Postgres가 그 앞의 행을 전부 스캔해야 해서, select("*")처럼 폭이 넓은
+    조회는 뒤쪽 페이지에서 Supabase의 statement_timeout을 넘겨 실패했다
+    (offset 0은 1초, offset 100000은 타임아웃 — 직접 재현해 확인함).
+
+    대신 id(bigint identity, 기본키) 구간으로 나눠서 각 구간을 gt/lte
+    범위 조건으로 직접 조회한다 — 인덱스로 바로 찾아가므로 구간 위치와
+    무관하게 빠르고, 구간마다 완전히 독립적이라 동시에 여러 개를 보내도
+    안전하다. 그래도 개별 구간 조회가 이따금 실패할 수 있어(일시적 부하 등)
+    구간마다 짧게 재시도한다.
+    """
+    probe = (
+        supabase.table(table)
+        .select("id", count="exact")
+        .order("id", desc=True)
+        .limit(1)
+        .execute()
+    )
+    total = probe.count or 0
+    if total == 0:
+        return []
+    max_id = probe.data[0]["id"] if probe.data else 0
+
+    n_chunks = max(1, math.ceil(max_id / page_size))
+    bounds = [(i * page_size, min((i + 1) * page_size, max_id)) for i in range(n_chunks)]
+
+    def fetch_chunk(bound: tuple[int, int], retries: int = 3) -> list[dict[str, Any]]:
+        lo, hi = bound
+        for attempt in range(retries):
+            try:
+                resp = (
+                    supabase.table(table)
+                    .select(columns)
+                    .gt("id", lo)
+                    .lte("id", hi)
+                    .execute()
+                )
+                return resp.data or []
+            except Exception:  # noqa: BLE001 — 일시적 부하 등, 마지막 시도면 그대로 올린다
+                if attempt == retries - 1:
+                    raise
+                time.sleep(0.5 * (attempt + 1))
+        return []  # 도달하지 않음(mypy 안심용)
+
+    result: list[dict[str, Any]] = []
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        for page in executor.map(fetch_chunk, bounds):
+            result.extend(page)
 
     return result
 
