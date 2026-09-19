@@ -5,3 +5,4 @@ python-dotenv>=1.0
 supabase>=2.0
 anthropic>=1.5
 pydantic>=2.0
+pyproj>=3.6   # district_geo.py — 상권 좌표계(EPSG:5181) → 위경도(WGS84) 변환

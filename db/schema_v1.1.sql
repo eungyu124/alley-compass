@@ -941,5 +941,24 @@ on public.search_sessions(user_id, created_at desc);
 
 
 -- =========================================================
+-- v1.4 패치 — 상권 좌표/구/면적 (지도)
+--
+-- alley_compass_etl.py가 긁어오는 6종 데이터(유동인구·매출·점포·시설·
+-- 직장인구·상주인구)에는 좌표가 없어 gu_name/latitude/longitude가 계속
+-- NULL이었다. 별도 스크립트 district_geo.py가 서울시 상권분석서비스
+-- (TbgisTrdarRelm, "영역-상권")로 채운다 — 이름과 달리 다각형이 아니라
+-- 중심점 좌표 + 면적만 주므로, area_m2를 새로 추가해 지도에서 원(circle)
+-- 반지름을 면적에 비례시키는 데 쓴다. 기존 프로젝트에는 이 섹션만
+-- SQL Editor에 붙여넣어도 된다(여러 번 실행해도 안전).
+-- =========================================================
+
+alter table public.districts
+    add column if not exists area_m2 double precision;
+
+comment on column public.districts.area_m2 is
+    '상권 면적(㎡). 서울시 상권분석서비스(영역-상권, TbgisTrdarRelm)의 RELM_AR. district_geo.py가 채운다.';
+
+
+-- =========================================================
 -- 완료
 -- =========================================================
