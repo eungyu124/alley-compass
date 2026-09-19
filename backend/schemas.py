@@ -64,6 +64,19 @@ class VerifiedClaimOut(BaseModel):
     corrected: bool
 
 
+class ReportRequest(BaseModel):
+    business_code: str
+    budget: Optional[float] = None
+    age: Literal["20", "30", "both"] = "both"
+    character: Literal["foot", "resident", "worker", "campus"] = "foot"
+    priority: Literal["survival", "cost", "growth"] = "survival"
+    top_k: int = Field(
+        default=5, ge=1, le=10,
+        description="상권당 Claude를 최대 2회(추천+반대) 호출하므로 과금·시간 보호를 위해 10 이하로 제한",
+    )
+    model: Optional[str] = None
+
+
 class AgentResponse(BaseModel):
     district_code: str
     district_name: str

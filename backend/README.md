@@ -34,11 +34,35 @@ http://localhost:8000/docs 에서 Swagger UI로 바로 테스트 가능.
 | `GET /districts?business_code=` | 상권 목록 | 무료 |
 | `POST /rank` | 조건 기반 전체 재랭킹 (PRD §16) | 무료 (결정론적, Claude 미사용) |
 | `POST /districts/{code}/agents` | 추천/반대 근거 생성 + 검증 (PRD §10) | **Claude API 과금 발생** |
+| `POST /report` | Top-K 상권 + 각각의 추천/반대 근거를 PDF 한 장으로 (PRD F-15) | **Claude API 과금 발생** (상권당 최대 2회, `top_k` 1~10) |
 
 `/rank`와 `/districts/{code}/agents`를 분리해 둔 이유: 랭킹은 서울 전체
 후보(1,000개 이상)를 매번 다시 계산해야 하므로 비용이 드는 Claude 호출을
 여기 넣으면 안 되고, 근거 생성은 사용자가 실제로 펼쳐본 상위 몇 곳에 대해서만
-필요하다.
+필요하다. `/report`는 그 근거 생성을 Top-K개만큼 자동으로 반복해 PDF로
+묶어주는 것뿐 — 새 판정 로직은 없다(`report.py`는 HTML 렌더링 + PDF 변환만).
+
+### `/report` 사용 예
+
+```bash
+curl -X POST http://localhost:8000/report \
+  -H "Content-Type: application/json" \
+  -d '{"business_code":"CS100010","budget":5000,"top_k":3}' \
+  -o report.pdf
+```
+
+### macOS에서 PDF가 안 만들어질 때 (WeasyPrint)
+
+WeasyPrint는 Pango/cairo/glib를 시스템 라이브러리로 불러온다. Apple
+Silicon Homebrew(`/opt/homebrew`)는 기본 라이브러리 탐색 경로에 없어서
+`cannot load library 'libgobject-2.0-0'` 같은 에러가 날 수 있다.
+
+```bash
+brew install pango   # cairo/glib/harfbuzz 등 의존성도 같이 설치됨
+```
+
+설치만 하면 된다 — `report.py`가 macOS에서 `DYLD_LIBRARY_PATH`를 자동으로
+맞춰준다(Linux 서버 배포 시에는 이 문제 자체가 거의 없다).
 
 ## 모델 버전
 

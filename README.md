@@ -27,7 +27,8 @@
 | 검증 Tool 6종 | ✅ 동작 (LLM 미사용, 결정론적) | [`alley_compass_etl/verification_tools.py`](alley_compass_etl/verification_tools.py) |
 | Claude 에이전트 3종 | ✅ 동작 (Sonnet 5, 라이브 검증 완료) | [`alley_compass_etl/narrative_agents.py`](alley_compass_etl/narrative_agents.py), [`fact_sheet.py`](alley_compass_etl/fact_sheet.py), [`pipeline.py`](alley_compass_etl/pipeline.py) |
 | 웹 프론트 | ✅ `backend/`에 연결됨 — 상권·업종·랭킹은 실제 데이터, 추천/반대 근거는 버튼으로 실제 Claude 호출 | [`web/`](web/) |
-| FastAPI 백엔드 | ✅ 동작 (`/rank`, `/districts/{code}/agents`), **랭킹 점수는 아직 휴리스틱** | [`backend/`](backend/) |
+| FastAPI 백엔드 | ✅ 동작 (`/rank`, `/districts/{code}/agents`, `/report`), **랭킹 점수는 아직 휴리스틱** | [`backend/`](backend/) |
+| PDF 리포트 (F-15) | ✅ 동작 (WeasyPrint) — Top-K 상권 + 실제 Claude 근거를 PDF 한 장으로 | `POST /report` |
 | LightGBM 예측 모델 | ⚠️ 학습 파이프라인 완성, **실제 다분기 데이터로 학습 전** (합성 데이터로 배관만 검증) | [`ml/`](ml/) |
 
 **웹 화면의 상권·업종·랭킹은 이제 실제 데이터다** (`alley_compass_etl.py`로 수집한 만큼만).

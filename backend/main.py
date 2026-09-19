@@ -7,6 +7,7 @@ PRD §19 기술 스택 / §24 MVP Workflow의 "FastAPI 백엔드" 자리.
     Feature(district_features)
         -> /rank            (scoring.py, 결정론적 — 나중에 LightGBM으로 교체)
         -> /districts/{code}/agents  (fact_sheet.py + narrative_agents.py, Claude)
+        -> /report          (report.py, 위 두 결과를 Top-K만큼 모아 PDF로, PRD F-15)
 
 이 파일은 새 로직을 만들지 않는다 — alley_compass_etl/ 의 verification_tools.py,
 fact_sheet.py, narrative_agents.py를 그대로 재사용한다. 별도 패키지로 만들지
@@ -24,6 +25,7 @@ from __future__ import annotations
 import os
 import sys
 import time
+from datetime import datetime
 from pathlib import Path
 
 BACKEND_DIR = Path(__file__).resolve().parent
@@ -35,17 +37,20 @@ import pandas as pd  # noqa: E402
 from dotenv import load_dotenv  # noqa: E402
 from fastapi import FastAPI, HTTPException  # noqa: E402
 from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
+from fastapi.responses import Response  # noqa: E402
 
 from fact_sheet import build_fact_sheet  # noqa: E402
 from narrative_agents import DEFAULT_MODEL, generate_recommendation, generate_risk, verify_and_correct  # noqa: E402
 from verification_tools import ToolError, get_supabase_client, load_feature_frame, log  # noqa: E402
 
+from report import build_report_pdf  # noqa: E402
 from schemas import (  # noqa: E402
     AgentRequest,
     AgentResponse,
     DistrictScore,
     RankRequest,
     RankResponse,
+    ReportRequest,
     VerifiedClaimOut,
 )
 from scoring import MODEL_VERSION, rank_districts  # noqa: E402
@@ -81,7 +86,7 @@ def get_frame(refresh: bool = False) -> pd.DataFrame:
     return _FRAME_CACHE
 
 
-def _condition_text(req: RankRequest | AgentRequest) -> str:
+def _condition_text(req: RankRequest | AgentRequest | ReportRequest) -> str:
     age_label = {"20": "20대", "30": "30대", "both": "20~30대"}[req.age]
     character_label = {
         "foot": "유동인구 중심", "resident": "주거 배후", "worker": "직장 배후", "campus": "대학가",
@@ -275,4 +280,81 @@ def district_agents(district_code: str, req: AgentRequest) -> AgentResponse:
         facts={k: {"label": f.label, "value": f.value, "unit": f.unit} for k, f in facts.items()},
         recommendation=to_out(rec_verified),
         risk=to_out(risk_verified),
+    )
+
+
+@app.post("/report")
+def report(req: ReportRequest) -> Response:
+    """PRD F-15. Top-K 상권 + 각 상권의 추천/반대 근거를 PDF 한 장으로 묶는다.
+
+    상권마다 Recommendation + Risk Agent를 호출하므로(최대 10곳 x 2회) 응답까지
+    수십 초~분 단위가 걸리고 실제 과금이 발생한다 — top_k를 10 이하로 제한한
+    이유다. 개별 상권에서 Claude 호출이 실패해도 그 상권만 오류를 표시하고
+    나머지는 계속 진행한다(전체 리포트가 한 상권 때문에 실패하지 않도록).
+    """
+    df = get_frame()
+    try:
+        ranked, as_of = rank_districts(df, req.business_code, age=req.age, character=req.character, priority=req.priority)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    biz_rows = df[df["business_code"] == req.business_code]
+    business_name = biz_rows["business_name"].iloc[0]
+    conditions_text = _condition_text(req)
+    model = req.model or DEFAULT_MODEL
+    client = anthropic.Anthropic()
+
+    sections = []
+    for r in ranked.head(req.top_k).itertuples():
+        row = biz_rows[biz_rows["district_code"] == r.district_code]
+        district_name = row["district_name"].iloc[0]
+        rec_claims: list[dict] = []
+        risk_claims: list[dict] = []
+        agent_error: str | None = None
+        try:
+            facts = build_fact_sheet(df, r.district_code, req.business_code, budget=req.budget)
+            rec_output = generate_recommendation(client, district_name, business_name, conditions_text, facts, model=model)
+            risk_output = generate_risk(client, district_name, business_name, conditions_text, facts, model=model)
+            rec_claims = [
+                {"text": c.claim_text, "corrected": c.corrected}
+                for c in verify_and_correct(client, rec_output.claims, facts, model=model)
+                if c.verified
+            ]
+            risk_claims = [
+                {"text": c.claim_text, "corrected": c.corrected}
+                for c in verify_and_correct(client, risk_output.claims, facts, model=model)
+                if c.verified
+            ]
+        except ToolError as exc:
+            agent_error = str(exc)
+        except anthropic.AuthenticationError:
+            agent_error = "ANTHROPIC_API_KEY가 설정되지 않았거나 잘못됐습니다."
+        except anthropic.RateLimitError as exc:
+            agent_error = f"Claude API rate limit: {exc}"
+        except anthropic.APIStatusError as exc:
+            agent_error = f"Claude API 오류 ({exc.status_code}): {exc.message}"
+
+        sections.append({
+            "rank": int(r.rank),
+            "district_code": r.district_code,
+            "district_name": district_name,
+            "final_score": float(r.final_score),
+            "breakdown": r.breakdown,
+            "recommendation": rec_claims,
+            "risk": risk_claims,
+            "agent_error": agent_error,
+        })
+
+    pdf_bytes = build_report_pdf(
+        business_name=business_name,
+        conditions_text=conditions_text,
+        as_of=as_of,
+        model_version=MODEL_VERSION,
+        sections=sections,
+    )
+    filename = f"alley-compass-{req.business_code}-{datetime.now():%Y%m%d%H%M}.pdf"
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
