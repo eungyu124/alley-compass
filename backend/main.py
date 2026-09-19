@@ -42,7 +42,13 @@ from fastapi.responses import Response  # noqa: E402
 from condition_parser import parse_condition  # noqa: E402
 from fact_sheet import build_fact_sheet  # noqa: E402
 from narrative_agents import DEFAULT_MODEL, generate_recommendation, generate_risk, verify_and_correct  # noqa: E402
-from verification_tools import ToolError, get_supabase_client, load_feature_frame, log  # noqa: E402
+from verification_tools import (  # noqa: E402
+    ToolError,
+    get_supabase_client,
+    load_district_history,
+    load_feature_frame,
+    log,
+)
 
 from auth import CurrentUser, require_user  # noqa: E402
 from detail import build_detail  # noqa: E402
@@ -92,15 +98,23 @@ _USE_SUPABASE = os.getenv("BACKEND_USE_SUPABASE", "false").strip().lower() == "t
 
 
 def get_frame(refresh: bool = False) -> pd.DataFrame:
-    """district_features를 메모리에 캐시해서 매 요청마다 다시 읽지 않는다.
+    """district_features의 "최신 분기 한 개"를 메모리에 캐시해서 매 요청마다
+    다시 읽지 않는다 — /rank·/agents·/report처럼 서울 전체 상권을 한 시점
+    기준으로 비교하는 용도는 이걸로 충분하다.
 
     데이터 소스는 BACKEND_USE_SUPABASE(.env)로 고른다 — 기본은 로컬 CSV라
     Supabase service_role 권한(grant) 설정 전에도 API가 바로 동작한다.
+
+    18개 분기(14만 행 이상) 전체를 올리지 않는 이유: 실제로 Render 무료
+    플랜(512MB)에서 전체를 캐싱했다가 731MB까지 치솟아 메모리 초과로
+    죽는 걸 확인했다. 과거 분기가 필요한 화면(상권 하나의 추이 차트)은
+    load_district_history()로 그때그때 작게 따로 받는다 — district_detail()
+    참고.
     """
     global _FRAME_CACHE
     if _FRAME_CACHE is None or refresh:
         try:
-            _FRAME_CACHE = load_feature_frame(use_supabase=_USE_SUPABASE)
+            _FRAME_CACHE = load_feature_frame(use_supabase=_USE_SUPABASE, latest_only=_USE_SUPABASE)
         except ToolError as exc:
             # 데이터가 아직 없는 상태(ETL 미실행 · Supabase 미적재).
             source = "Supabase district_features" if _USE_SUPABASE else "로컬 CSV"
@@ -360,10 +374,15 @@ def district_detail(
     /agents 와 달리 Claude 를 호출하지 않는다 — 전부 Pandas 집계라 과금이
     없고, 그래서 상권을 열 때마다 바로 불러도 된다. 백분위 정의는
     verification_tools.percentile() 을 그대로 쓴다.
+
+    df(캐시, 최신 분기 전체 상권)와 history(이 상권×업종 하나의 전체 이력,
+    그때그때 작게 조회)를 분리해서 build_detail()에 같이 넘긴다 — 추이
+    차트만 과거 분기가 필요하고, 나머지 진단은 최신 분기 비교로 충분하다.
     """
     df = get_frame()
+    history = load_district_history(district_code, business_code, use_supabase=_USE_SUPABASE)
     try:
-        return DetailResponse(**build_detail(df, district_code, business_code))
+        return DetailResponse(**build_detail(df, history, district_code, business_code))
     except ToolError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 

@@ -361,20 +361,31 @@ def _quarterly_series(
 # 진입점
 # ---------------------------------------------------------------------
 
-def build_detail(df: pd.DataFrame, district_code: str, business_code: str) -> dict[str, Any]:
+def build_detail(
+    df: pd.DataFrame, history: pd.DataFrame, district_code: str, business_code: str
+) -> dict[str, Any]:
     """상세 Drawer 한 번 열 때 필요한 모든 값을 한 응답으로 만든다.
 
     Claude를 호출하지 않는다 — 전부 결정론적 집계다. 그래서 상권을 열 때마다
     불러도 과금되지 않는다(근거 문장 생성만 /agents 로 분리돼 있다).
+
+    df와 history는 용도가 다르다.
+      df      서울 전체 상권의 "최신 분기 한 개"(get_frame() 캐시) —
+              잠재고객·경쟁강도·영업환경처럼 다른 상권과 비교하는 데 쓴다.
+      history 이 상권×업종 하나의 전체 분기 이력(verification_tools.
+              load_district_history()로 그때그때 따로 조회) — 추이
+              차트·수집 분기 수 계산에만 쓴다.
+    이렇게 나눈 이유: df를 매번 전체 이력으로 캐싱하면 14만 행 이상을
+    메모리에 올려야 해서(Render 무료 플랜에서 실제로 메모리 초과가 났다),
+    "여러 상권 비교"에는 최신 분기 하나면 충분하다는 점을 이용해 쪼갰다.
     """
     dcode, bcode = str(district_code), str(business_code)
 
-    history = df[(df["district_code"] == dcode) & (df["business_code"] == bcode)]
     if history.empty:
         raise ToolError(f"상권_코드 {dcode} × 업종 {bcode} 데이터가 없습니다.")
 
-    as_of = str(history["reference_date"].max())
-    row = history[history["reference_date"] == as_of].iloc[0]
+    as_of = str(df["reference_date"].max()) if not df.empty else str(history["reference_date"].max())
+    row = history[history["reference_date"] == history["reference_date"].max()].iloc[0]
 
     competition_area, competition_chart = _competition_area(df, dcode, bcode, as_of)
 

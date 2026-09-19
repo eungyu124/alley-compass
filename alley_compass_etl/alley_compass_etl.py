@@ -834,6 +834,7 @@ def select_all(
     columns: str,
     page_size: int = 1000,
     max_workers: int = 6,
+    filters: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     """전체 행을 id 구간별로 나눠 병렬 조회한다.
 
@@ -853,10 +854,22 @@ def select_all(
     개별 요청이 오히려 statement_timeout을 넘기는 걸 실제로 겪었다(로컬
     macOS에선 12로도 문제없었지만 Render에서는 실패했다). 재시도 횟수와
     대기 시간도 그래서 넉넉히 뒀다.
+
+    filters는 {컬럼: 값} 형태의 등호 조건을 추가로 건다(예: 최신 분기만
+    조회). id 구간은 여전히 테이블 전체 범위 기준으로 나누므로, 필터가
+    걸리면 구간 대부분이 빈 결과를 받는 셈이 되지만 — 인덱스 조건 조회라
+    빈 결과도 빠르고, 애초에 필터를 거는 경우는 결과 자체가 작을 때라
+    문제되지 않는다.
     """
+
+    def _with_filters(query: Any) -> Any:
+        if filters:
+            for col, val in filters.items():
+                query = query.eq(col, val)
+        return query
+
     probe = (
-        supabase.table(table)
-        .select("id", count="exact")
+        _with_filters(supabase.table(table).select("id", count="exact"))
         .order("id", desc=True)
         .limit(1)
         .execute()
@@ -874,8 +887,7 @@ def select_all(
         for attempt in range(retries):
             try:
                 resp = (
-                    supabase.table(table)
-                    .select(columns)
+                    _with_filters(supabase.table(table).select(columns))
                     .gt("id", lo)
                     .lte("id", hi)
                     .execute()

@@ -50,6 +50,7 @@ from typing import Any, Literal
 import numpy as np
 import pandas as pd
 from dotenv import load_dotenv
+from supabase import Client
 
 from alley_compass_etl import get_supabase_client, log, select_all
 
@@ -128,17 +129,19 @@ def _load_from_csv(csv_path: Path) -> pd.DataFrame:
     return _coerce_numeric(df)
 
 
-def _load_from_supabase() -> pd.DataFrame:
-    load_dotenv()
-    supabase = get_supabase_client()
+def _latest_reference_date_value(supabase: Client) -> str | None:
+    """district_features 전체에서 가장 최근 reference_date 하나만 가볍게 조회한다."""
+    resp = (
+        supabase.table("district_features")
+        .select("reference_date")
+        .order("reference_date", desc=True)
+        .limit(1)
+        .execute()
+    )
+    return resp.data[0]["reference_date"] if resp.data else None
 
-    feats = pd.DataFrame(select_all(supabase, "district_features", "*"))
-    if feats.empty:
-        raise ToolError(
-            "Supabase district_features 테이블이 비어 있습니다. "
-            "아직 데이터를 업로드하지 않았다면 --csv 옵션으로 로컬 "
-            "district_features_debug.csv 를 쓰세요."
-        )
+
+def _merge_masters(supabase: Client, feats: pd.DataFrame) -> pd.DataFrame:
     districts = pd.DataFrame(
         select_all(
             supabase,
@@ -164,19 +167,109 @@ def _load_from_supabase() -> pd.DataFrame:
     return _coerce_numeric(df)
 
 
+def _load_from_supabase(latest_only: bool = False) -> pd.DataFrame:
+    """district_features + districts + business_types를 합친 프레임.
+
+    latest_only=True면 가장 최근 분기 한 개만 가져온다 — /rank처럼 "서울
+    전체 상권을 한 시점 기준으로 비교"하는 용도는 이걸로 충분하고, 18개
+    분기(14만 행 이상) 전체를 메모리에 올릴 필요가 없다. 실제로 Render
+    무료 플랜(512MB)에서 전체를 올렸다가 메모리 초과로 죽는 걸 확인했다
+    (측정: 시작 128MB → 전체 로드 후 731MB). 과거 분기가 필요한 화면
+    (상권 하나의 추이 차트)은 load_district_history()로 그때그때 작게
+    따로 받는다.
+    """
+    load_dotenv()
+    supabase = get_supabase_client()
+
+    filters = None
+    if latest_only:
+        latest_date = _latest_reference_date_value(supabase)
+        if latest_date is not None:
+            filters = {"reference_date": latest_date}
+
+    feats = pd.DataFrame(select_all(supabase, "district_features", "*", filters=filters))
+    if feats.empty:
+        raise ToolError(
+            "Supabase district_features 테이블이 비어 있습니다. "
+            "아직 데이터를 업로드하지 않았다면 --csv 옵션으로 로컬 "
+            "district_features_debug.csv 를 쓰세요."
+        )
+    return _merge_masters(supabase, feats)
+
+
 def load_feature_frame(
     csv_path: Path | None = None,
     use_supabase: bool = False,
+    latest_only: bool = False,
 ) -> pd.DataFrame:
     """Tool들이 대조할 '원본 데이터프레임'을 반환한다.
 
     district_features 테이블과 동일한 컬럼 구조
     (district_code, business_code, reference_date, foot_traffic, ...)
     로 정규화되어 있으면 데이터 출처는 CSV든 Supabase든 상관없다.
+
+    latest_only는 Supabase 경로에서만 의미가 있다(CSV는 로컬 개발용이라
+    이미 작고, ml/train.py처럼 전체 이력이 필요한 CLI 도구는 이 옵션을
+    안 쓴다 — 기본값 False로 기존 동작을 그대로 유지한다).
     """
     if use_supabase:
-        return _load_from_supabase()
+        return _load_from_supabase(latest_only=latest_only)
     return _load_from_csv(csv_path or DEFAULT_CSV)
+
+
+def load_district_history(
+    district_code: str,
+    business_code: str,
+    use_supabase: bool = False,
+    csv_path: Path | None = None,
+) -> pd.DataFrame:
+    """한 상권×업종의 전체 분기 이력만 가져온다. /detail의 추이 차트 전용.
+
+    get_frame()의 캐시(latest_only=True)에는 과거 분기가 없으므로, 상세
+    화면을 열 때마다 이 함수로 그 상권×업종 하나만 작게(현재 최대 18행)
+    따로 조회한다 — 전체 테이블을 메모리에 올리지 않고도 추이를 보여줄
+    수 있다.
+    """
+    dcode, bcode = str(district_code), str(business_code)
+
+    if not use_supabase:
+        df = _load_from_csv(csv_path or DEFAULT_CSV)
+        return df[(df["district_code"] == dcode) & (df["business_code"] == bcode)]
+
+    supabase = get_supabase_client()
+    district = (
+        supabase.table("districts")
+        .select("id,district_name")
+        .eq("district_code", dcode)
+        .limit(1)
+        .execute()
+    )
+    business = (
+        supabase.table("business_types")
+        .select("id,business_name")
+        .eq("business_code", bcode)
+        .limit(1)
+        .execute()
+    )
+    if not district.data or not business.data:
+        return pd.DataFrame()
+
+    rows = (
+        supabase.table("district_features")
+        .select("*")
+        .eq("district_id", district.data[0]["id"])
+        .eq("business_type_id", business.data[0]["id"])
+        .execute()
+    ).data or []
+    if not rows:
+        return pd.DataFrame()
+
+    df = pd.DataFrame(rows)
+    df["district_code"] = dcode
+    df["district_name"] = district.data[0]["district_name"]
+    df["business_code"] = bcode
+    df["business_name"] = business.data[0]["business_name"]
+    return _coerce_numeric(df)
 
 
 def _latest_reference_date(df: pd.DataFrame, mask: pd.Series, metric: str) -> str | None:
