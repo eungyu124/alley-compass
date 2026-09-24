@@ -9,9 +9,14 @@ pydantic>=2.0
 weasyprint>=62
 
 # backend/models/ 에 승격해 둔 LightGBM 아티팩트를 불러와 추론한다(scoring.py).
-# 학습 자체는 ml/train.py(별도 requirements)가 하고, 여기는 결과물을 읽기만
-# 한다 — 그래서 scikit-learn/shap 같은 학습용 의존성은 안 넣는다.
+# scikit-learn은 학습에만 쓴다고 생각해서 처음엔 뺐었는데 틀렸다 — 모델을
+# LGBMClassifier(사이킷런 래퍼)로 학습했으면, predict_proba() 한 번만 하려고
+# 불러올 때도 pickle이 그 클래스 정의를 복원하려고 sklearn을 import한다.
+# 실제로 Render 배포 후 "No module named 'sklearn'"으로 로드가 조용히
+# 휴리스틱 폴백된 걸 보고 확인했다. shap은 학습 중 feature importance
+# 분석에만 쓰고 추론엔 안 쓰여서 그건 안 넣는다.
 lightgbm>=4.5
+scikit-learn>=1.4
 joblib>=1.4
 
 # Supabase Auth 가 발급한 JWT 검증 (backend/auth.py)
