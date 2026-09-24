@@ -48,6 +48,7 @@ from sklearn.calibration import calibration_curve
 from sklearn.metrics import average_precision_score, brier_score_loss, roc_auc_score
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "alley_compass_etl"))
+from alley_compass_etl import quarter_index  # noqa: E402
 from verification_tools import load_feature_frame, log  # noqa: E402
 
 from features import FEATURE_COLUMNS, build_feature_matrix  # noqa: E402
@@ -347,7 +348,12 @@ def main() -> None:
         if args.train_end_quarter is None or args.val_end_quarter is None:
             print("오류: 실데이터 학습에는 --train-end-quarter 와 --val-end-quarter가 필요합니다.", file=sys.stderr)
             sys.exit(1)
-        train_end_q, val_end_q = args.train_end_quarter, args.val_end_quarter
+        # CLI는 YYYYQ 형식(예: 20224)을 받지만 panel["q_index"]는 year*4+quarter
+        # 스케일이다(quarter_index()와 동일) — 변환 없이 그대로 비교하면 20224가
+        # 실제 q_index(8000대)보다 훨씬 커서 전부 train으로만 떨어지고 val/test가
+        # 텅 빈다. temporal_split() 호출 전에 반드시 이 스케일로 바꿔야 한다.
+        train_end_q = quarter_index(args.train_end_quarter)
+        val_end_q = quarter_index(args.val_end_quarter)
         version = args.version or f"v-{pd.Timestamp.now():%Y%m%d-%H%M}"
 
     result = train_and_evaluate(

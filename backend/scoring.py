@@ -7,11 +7,17 @@ PRD §16 "사용자 Ranking Logic" 구현
     Model Survival Stability + Budget Fit + Target Customer Fit + User Preference
         -> Personalized Ranking
 
-LightGBM 생존 안정성 Score(PRD §14)는 아직 학습 전이다(다분기 데이터 필요,
-alley_compass_etl/README.md 참고). 그때까지 이 모듈이 원본 feature로 계산한
-휴리스틱 Score를 대신 쓴다 — MODEL_VERSION="heuristic-v0"로 항상 명시한다.
-LightGBM이 준비되면 이 파일의 stability_score 계산 부분만 모델 추론 호출로
-바꾸면 되고, API 응답 모양(RankResponse)은 그대로 유지된다.
+LightGBM 생존 안정성 Score(PRD §14)는 backend/models/ 에 올려둔 아티팩트가
+있으면 그걸 쓰고, 없으면(모델을 아직 승격 안 한 로컬/개발 환경 등) 이
+모듈이 원본 feature로 계산한 휴리스틱 Score로 조용히 대체한다 — 지어낸
+예측을 만들지 않는다는 원칙과 같다. 실제로 쓰인 쪽에 따라 model_version이
+"lightgbm-<버전>" 또는 "heuristic-v0"로 응답에 그대로 찍힌다.
+
+모델 파일은 ml/train.py --save-to-supabase 로 model_versions에 등록한 것과
+같은 버전 문자열로 backend/models/<version>.joblib 에 복사해 "승격"한다
+(ml/models/ 은 실험용이라 gitignore 대상 — backend/models/ 만 커밋해서
+Docker 이미지에 실린다). 피처 목록은 joblib 안에 같이 저장돼 있어(ml/
+features.py의 FEATURE_COLUMNS) 여기서 ml/ 을 다시 import하지 않아도 된다.
 
 Budget Fit: 5종 공식 데이터셋에 보증금/임대료가 없어(verification_tools.py
 budget_validator 참고) 상권별로 검증 가능한 예산 적합도를 계산할 수 없다.
@@ -24,8 +30,10 @@ budget_margin fact)은 사용자가 직접 입력한 단일 추정치를 검증�
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Literal
 
+import joblib
 import pandas as pd
 
 from verification_tools import demand_series
@@ -37,6 +45,61 @@ Character = Literal["foot", "resident", "worker", "campus"]
 Priority = Literal["survival", "cost", "growth"]
 
 _BASE_WEIGHTS = {"demand": 0.30, "comp": 0.24, "perf": 0.16, "access": 0.12, "stability": 0.18}
+
+_MODELS_DIR = Path(__file__).resolve().parent / "models"
+_LGBM_CACHE: dict | None = None
+_LGBM_LOAD_ATTEMPTED = False
+
+
+def _load_lightgbm() -> dict | None:
+    """backend/models/ 에 승격해 둔 LightGBM 아티팩트를 한 번만 불러와 캐싱한다.
+
+    파일이 없으면 None — 호출부가 휴리스틱으로 조용히 대체한다. 여러 버전이
+    있으면 파일명(v-YYYYMMDD-HHMM.joblib) 기준 가장 최신을 쓴다 — 이 형식이면
+    문자열 정렬이 곧 시간 정렬이다.
+    """
+    global _LGBM_CACHE, _LGBM_LOAD_ATTEMPTED
+    if _LGBM_LOAD_ATTEMPTED:
+        return _LGBM_CACHE
+    _LGBM_LOAD_ATTEMPTED = True
+
+    if not _MODELS_DIR.exists():
+        return None
+    candidates = sorted(_MODELS_DIR.glob("*.joblib"))
+    if not candidates:
+        return None
+
+    path = candidates[-1]
+    try:
+        artifact = joblib.load(path)
+        artifact["version"] = path.stem
+        _LGBM_CACHE = artifact
+    except Exception as exc:  # noqa: BLE001 — 로드 실패는 휴리스틱 폴백으로 처리
+        print(f"[경고] LightGBM 모델 로드 실패({path.name}): {exc}")
+        _LGBM_CACHE = None
+    return _LGBM_CACHE
+
+
+def active_model_version() -> str:
+    """지금 랭킹에 실제로 쓰이는 모델 버전. /health 처럼 스코어를 안 매기는
+    곳에서도 "지금 어떤 모델이 붙어 있나"를 가볍게 확인할 때 쓴다."""
+    artifact = _load_lightgbm()
+    return f"lightgbm-{artifact['version']}" if artifact else MODEL_VERSION
+
+
+def _lightgbm_stability(scope: pd.DataFrame) -> tuple[pd.Series | None, str]:
+    """가능하면 (LightGBM 예측 Series, "lightgbm-<버전>")을, 안 되면 (None, MODEL_VERSION)을 돌려준다."""
+    artifact = _load_lightgbm()
+    if artifact is None:
+        return None, MODEL_VERSION
+    try:
+        X = scope[artifact["feature_columns"]]
+        proba_unstable = artifact["model"].predict_proba(X)[:, 1]
+        score = pd.Series((1 - proba_unstable) * 100, index=scope.index).round(1)
+        return score, f"lightgbm-{artifact['version']}"
+    except Exception as exc:  # noqa: BLE001 — 예측 실패도 휴리스틱 폴백으로 처리
+        print(f"[경고] LightGBM 예측 실패, 휴리스틱으로 대체: {exc}")
+        return None, MODEL_VERSION
 
 
 def _pct(series: pd.Series) -> pd.Series:
@@ -147,6 +210,15 @@ def rank_districts(
 
     stability_score = sum(w_avail[k] * available[k] for k in available).round(1)
 
+    # LightGBM이 승격돼 있으면 그 예측으로 헤드라인 점수를 바꿔치기한다.
+    # breakdown(위 components)은 그대로 휴리스틱 축으로 남겨서 "어떤 요인이
+    # 크게/작게 작용했는지" 설명은 계속 보여준다 — 바뀌는 건 최종 합산
+    # 점수뿐이다. 모델이 없거나 예측이 실패하면 방금 계산한 휴리스틱
+    # stability_score를 그대로 쓴다(폴백).
+    lgbm_score, model_version = _lightgbm_stability(scope)
+    if lgbm_score is not None:
+        stability_score = lgbm_score
+
     out = scope[["district_code", "district_name"]].copy()
 
     # 지도 표시용 — CSV 소스(로컬 개발)에는 이 컬럼들이 아예 없을 수 있고,
@@ -181,4 +253,5 @@ def rank_districts(
     out = out.sort_values("final_score", ascending=False).reset_index(drop=True)
     out["rank"] = out.index + 1
     out.attrs["missing_components"] = [k for k in components if k not in available]
+    out.attrs["model_version"] = model_version
     return out, str(as_of)

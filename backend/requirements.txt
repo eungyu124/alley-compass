@@ -8,6 +8,12 @@ anthropic>=1.5
 pydantic>=2.0
 weasyprint>=62
 
+# backend/models/ 에 승격해 둔 LightGBM 아티팩트를 불러와 추론한다(scoring.py).
+# 학습 자체는 ml/train.py(별도 requirements)가 하고, 여기는 결과물을 읽기만
+# 한다 — 그래서 scikit-learn/shap 같은 학습용 의존성은 안 넣는다.
+lightgbm>=4.5
+joblib>=1.4
+
 # Supabase Auth 가 발급한 JWT 검증 (backend/auth.py)
 # crypto extra 는 비대칭 서명(ES256/RS256) 검증에 필요하다.
 PyJWT[crypto]>=2.9

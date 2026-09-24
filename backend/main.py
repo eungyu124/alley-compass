@@ -71,7 +71,7 @@ from schemas import (  # noqa: E402
     ReportRequest,
     VerifiedClaimOut,
 )
-from scoring import MODEL_VERSION, rank_districts  # noqa: E402
+from scoring import MODEL_VERSION, active_model_version, rank_districts  # noqa: E402
 
 load_dotenv(ETL_DIR / ".env")
 
@@ -319,7 +319,11 @@ def _persist_run(
 
 @app.get("/health")
 def health() -> dict:
-    return {"status": "ok", "model_version": MODEL_VERSION, "data_source": "supabase" if _USE_SUPABASE else "csv"}
+    return {
+        "status": "ok",
+        "model_version": active_model_version(),
+        "data_source": "supabase" if _USE_SUPABASE else "csv",
+    }
 
 
 @app.get("/business-types")
@@ -405,7 +409,7 @@ def rank(req: RankRequest, user: CurrentUser = Depends(require_user)) -> RankRes
         business_name=business_name,
         as_of=as_of,
         n_candidates=len(ranked),
-        model_version=MODEL_VERSION,
+        model_version=ranked.attrs.get("model_version", MODEL_VERSION),
         warnings=warnings,
         results=[
             DistrictScore(
@@ -599,7 +603,7 @@ def report(req: ReportRequest, user: CurrentUser = Depends(require_user)) -> Res
         business_name=business_name,
         conditions_text=conditions_text,
         as_of=as_of,
-        model_version=MODEL_VERSION,
+        model_version=ranked.attrs.get("model_version", MODEL_VERSION),
         sections=sections,
     )
     filename = f"alley-compass-{req.business_code}-{datetime.now():%Y%m%d%H%M}.pdf"
