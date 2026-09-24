@@ -10,9 +10,11 @@
 # libgdk-pixbuf-2.0-0으로 바뀌어서, "slim"만 쓰면 베이스가 바뀔 때 이 목록이 깨진다.
 FROM python:3.11-slim-bookworm
 
-# WeasyPrint 런타임 의존성 + 한글 PDF 렌더링용 폰트.
-# (macOS 로컬 개발에서 "brew install pango"로 해결했던 것과 같은 라이브러리들 —
-#  backend/report.py의 _patch_macos_library_path()는 Darwin 전용이라 여기선 안 쓰인다.)
+# WeasyPrint 런타임 의존성 + 한글 PDF 렌더링용 폰트 + LightGBM의 OpenMP 런타임.
+# (macOS 로컬 개발에서 WeasyPrint는 "brew install pango", LightGBM은
+#  "brew install libomp"로 각각 해결했던 것과 같은 종류의 라이브러리들 —
+#  여기 libgomp1이 리눅스에서의 libomp에 해당한다. backend/report.py의
+#  _patch_macos_library_path()는 Darwin 전용이라 여기선 안 쓰인다.)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libpango-1.0-0 \
     libpangoft2-1.0-0 \
@@ -22,6 +24,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libffi-dev \
     shared-mime-info \
     fonts-nanum \
+    libgomp1 \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
