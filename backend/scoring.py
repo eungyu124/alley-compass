@@ -46,6 +46,11 @@ Priority = Literal["survival", "cost", "growth"]
 
 _BASE_WEIGHTS = {"demand": 0.30, "comp": 0.24, "perf": 0.16, "access": 0.12, "stability": 0.18}
 
+# 실측 25th percentile이 3이라(중앙값 7) 이 기준으로 빠지는 건 전체의 20% 이내다.
+# 점포 1~2개인 상권은 폐업률이 태생적으로 0%나 100%밖에 못 나와서(중간이 없음)
+# LightGBM이 "안정적"으로 오인하는 걸 재현해 확인했다 — rank_districts() 참고.
+MIN_STORE_COUNT_FOR_MODEL = 3
+
 _MODELS_DIR = Path(__file__).resolve().parent / "models"
 _LGBM_CACHE: dict | None = None
 _LGBM_LOAD_ATTEMPTED = False
@@ -208,7 +213,8 @@ def rank_districts(
     total_w = sum(w_avail.values())
     w_avail = {k: v / total_w for k, v in w_avail.items()}
 
-    stability_score = sum(w_avail[k] * available[k] for k in available).round(1)
+    heuristic_stability = sum(w_avail[k] * available[k] for k in available).round(1)
+    stability_score = heuristic_stability
 
     # LightGBM이 승격돼 있으면 그 예측으로 헤드라인 점수를 바꿔치기한다.
     # breakdown(위 components)은 그대로 휴리스틱 축으로 남겨서 "어떤 요인이
@@ -217,7 +223,19 @@ def rank_districts(
     # stability_score를 그대로 쓴다(폴백).
     lgbm_score, model_version = _lightgbm_stability(scope)
     if lgbm_score is not None:
-        stability_score = lgbm_score
+        # 실측으로 확인한 문제: 점포가 1~2개뿐인 상권은 폐업률이 학습 시점
+        # 기준으로도 거의 항상 0%다(망할 기회 자체가 적었을 뿐 검증된 안정성이
+        # 아니다) — 그런데 모델이 이걸 "안정적"으로 오인해서, 점포 1개짜리
+        # 신생 상권이 강남역보다 안전하다고 나오는 걸 직접 재현해 확인했다.
+        # 표본이 이 기준보다 적은 행은 LightGBM 대신 휴리스틱(수요·경쟁·접근성
+        # 등 여러 축의 가중 평균)으로 대체한다 — 휴리스틱은 closure_rate 하나에
+        # 안 기대고 여러 축을 같이 보므로, 이런 상권의 낮은 수요·접근성이
+        # 그대로 반영돼 점수가 과장되지 않는다. "표본 부족을 안정성으로
+        # 둔갑시키지 않는다"는 원칙 — 재학습 없이 바로 적용 가능한 완화책이다.
+        low_sample = scope["store_count"].fillna(0) < MIN_STORE_COUNT_FOR_MODEL
+        stability_score = lgbm_score.where(~low_sample, heuristic_stability)
+        if low_sample.any():
+            model_version = f"{model_version}+heuristic-low-sample"
 
     out = scope[["district_code", "district_name"]].copy()
 

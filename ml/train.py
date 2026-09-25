@@ -58,13 +58,27 @@ MODEL_DIR = Path(__file__).resolve().parent / "models"
 MODEL_NAME = "LightGBM"
 
 
-def temporal_split(meta: pd.DataFrame, train_end_q: int, val_end_q: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+def temporal_split(
+    meta: pd.DataFrame, train_end_q: int, val_end_q: int, train_start_q: int | None = None
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """PRD §15: 과거 Train / 그 이후 Validation / 가장 최근 Test.
-    q_index(연도*4+분기) 기준으로 자르므로 미래 정보가 과거 쪽으로 새지 않는다."""
+    q_index(연도*4+분기) 기준으로 자르므로 미래 정보가 과거 쪽으로 새지 않는다.
+
+    train_start_q(선택): 학습 구간의 시작도 잘라낸다. 코로나 시기(2021~2022)처럼
+    폐업 유예·지원금 등으로 폐업률이 전반적으로 눌려 있던 분기를 학습에서
+    빼고 싶을 때 쓴다 — 그 시기엔 "폐업이 조금이라도 있으면 이상하다"는
+    패턴이 실제 데이터를 통해 강하게 학습되는데, 지금(코로나 이후) 시점엔
+    안 맞는다(강남역처럼 원래도 몇 % 폐업이 나는 상권이 코로나 시기와만
+    비교되면 늘 "불안정"으로 찍히는 걸 실제로 확인함). 안 주면 기존처럼
+    처음부터 train_end_q까지 전부 학습에 쓴다(하위 호환).
+    """
     if train_end_q >= val_end_q:
         raise ValueError("train_end_quarter는 val_end_quarter보다 앞이어야 합니다.")
+    if train_start_q is not None and train_start_q >= train_end_q:
+        raise ValueError("train_start_quarter는 train_end_quarter보다 앞이어야 합니다.")
     q = meta["q_index"]
-    return (q <= train_end_q).to_numpy(), ((q > train_end_q) & (q <= val_end_q)).to_numpy(), (q > val_end_q).to_numpy()
+    train_mask = (q <= train_end_q) if train_start_q is None else ((q > train_start_q) & (q <= train_end_q))
+    return train_mask.to_numpy(), ((q > train_end_q) & (q <= val_end_q)).to_numpy(), (q > val_end_q).to_numpy()
 
 
 def stability_score_from_proba(risk_proba: np.ndarray) -> np.ndarray:
@@ -138,6 +152,7 @@ def train_and_evaluate(
     train_end_q: int,
     val_end_q: int,
     *,
+    train_start_q: int | None = None,
     horizon_quarters: int = 4,
     is_synthetic: bool = False,
     lgb_params: dict[str, Any] | None = None,
@@ -150,7 +165,7 @@ def train_and_evaluate(
             f"({horizon_quarters}개 분기)보다 짧습니다. 다분기 데이터를 더 모으세요."
         )
 
-    train_mask, val_mask, test_mask = temporal_split(meta, train_end_q, val_end_q)
+    train_mask, val_mask, test_mask = temporal_split(meta, train_end_q, val_end_q, train_start_q)
     log(f"Temporal Split — train={train_mask.sum()}, val={val_mask.sum()}, test={test_mask.sum()}")
     if train_mask.sum() == 0:
         raise ValueError("학습 구간(train)에 데이터가 없습니다. train_end_quarter를 확인하세요.")
@@ -197,7 +212,11 @@ def train_and_evaluate(
         test_start=period(test_mask, "reference_date"),
         test_end=period_end(test_mask, "reference_date"),
         is_synthetic=is_synthetic,
-        extra_metadata={"horizon_quarters": horizon_quarters, "n_features": len(FEATURE_COLUMNS)},
+        extra_metadata={
+            "horizon_quarters": horizon_quarters,
+            "n_features": len(FEATURE_COLUMNS),
+            "train_start_q": train_start_q,
+        },
     )
 
 
@@ -310,6 +329,11 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--csv", type=Path, default=None, help="다분기 district_features CSV (없으면 debug CSV)")
     p.add_argument("--supabase", action="store_true", help="Supabase district_features에서 로드")
     p.add_argument("--synthetic", action="store_true", help="합성 데이터로 배관 점검만 (실데이터 불필요)")
+    p.add_argument(
+        "--train-start-quarter", type=int, default=None,
+        help="예: 20223 (2022년 3분기부터 학습, 그 이전은 제외). 코로나 시기처럼 "
+             "폐업률이 전반적으로 눌려 있던 구간을 학습에서 빼고 싶을 때 쓴다. 안 주면 처음부터.",
+    )
     p.add_argument("--train-end-quarter", type=int, default=None, help="예: 20224 (2022년 4분기까지 학습)")
     p.add_argument("--val-end-quarter", type=int, default=None, help="예: 20234 (2023년 4분기까지 검증)")
     p.add_argument("--horizon-quarters", type=int, default=4)
@@ -356,8 +380,17 @@ def main() -> None:
         val_end_q = quarter_index(args.val_end_quarter)
         version = args.version or f"v-{pd.Timestamp.now():%Y%m%d-%H%M}"
 
+    train_start_q = None
+    if not args.synthetic and args.train_start_quarter is not None:
+        train_start_q = quarter_index(args.train_start_quarter)
+
     result = train_and_evaluate(
-        panel, train_end_q, val_end_q, horizon_quarters=args.horizon_quarters, is_synthetic=args.synthetic
+        panel,
+        train_end_q,
+        val_end_q,
+        train_start_q=train_start_q,
+        horizon_quarters=args.horizon_quarters,
+        is_synthetic=args.synthetic,
     )
 
     log("=== 평가 결과 ===")
