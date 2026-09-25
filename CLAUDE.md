@@ -8,19 +8,34 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 프로젝트 개요·빠른 시작·설계 원칙은 루트 `README.md`에 있다. 이 파일은 그 위에
 **코드를 고칠 때 필요한 맥락**만 담는다.
 
-현재 있는 것은 PRD + DB 스키마 + ETL 파이프라인 + 검증 Tool 6종 + Agent 체인
+현재 있는 것은 PRD + DB 스키마 + ETL 파이프라인 + 상권 좌표 보강
+(`alley_compass_etl/district_geo.py`) + 검증 Tool 6종 + Agent 체인
 (Recommendation / Risk / Verification, `alley_compass_etl/narrative_agents.py`) +
-FastAPI 백엔드(`backend/`) + LightGBM 학습 파이프라인(`ml/`) + React 프론트
-(`web/`, 백엔드 실데이터 연결 · Supabase Auth 로그인 필수)다.
+자연어 조건 파싱(`alley_compass_etl/condition_parser.py`) + FastAPI 백엔드
+(`backend/`) + LightGBM 학습·배포 파이프라인(`ml/`) + React 프론트(`web/`,
+백엔드 실데이터 연결 · Supabase Auth 로그인 필수 · 카카오맵)다. 백엔드는 Render에,
+프론트는 Vercel에 배포돼 있다.
 
 - Agent 체인은 `claude-sonnet-5`로 라이브 검증까지 됐다. 다만 표본이 상권 1곳이라
-  재작성률·폐기율 측정이 남았다.
-- `backend/`는 동작하지만 `/rank`는 아직 LightGBM이 아니라 `backend/scoring.py`의
-  휴리스틱 Score(`model_version: "heuristic-v0"`)를 쓴다.
-- `ml/train.py`는 Label 정의·Temporal Split·평가지표까지 구현·`--synthetic`으로
-  배관 검증했지만, 실제 학습에 쓸 다분기 `district_features`가 아직 없다
-  (현재 1개 분기만 수집됨). 모델이 준비되면 `backend/scoring.py`의
-  `stability_score` 계산 부분만 교체하면 된다.
+  재작성률·폐기율 측정이 남았고, 결과는 아직 화면 표시용일 뿐
+  `agent_analyses`/`verification_claims` 테이블엔 안 쌓인다.
+- `/rank`는 `backend/scoring.py`의 `rank_districts()`가 계산한다. `backend/models/`에
+  LightGBM 아티팩트(`*.joblib`)가 승격돼 있으면 그 예측을 `stability_score`로 쓰고
+  (`model_version: "lightgbm-<버전>"`), 없거나 예측이 실패하면 원본 feature 기반
+  휴리스틱(`"heuristic-v0"`)으로 조용히 대체한다. 최종 `final_score`는
+  `stability_score`와, 사용자가 고른 상권성격(character)·연령대(age) 기반
+  `target_fit_score`의 가중합이다(PRD §16) — `character`/`age`를 바꿔도 정렬
+  순서가 실제로 바뀌어야 한다는 뜻이므로, 이 두 값을 다시 분리하는 리팩터링을
+  할 땐 반드시 실 데이터로 순위 변화를 재확인한다.
+- LightGBM은 실제로 학습·배포됐다(2021Q1~2025Q2, 18개 분기, 10개 업종, 22.5만 행).
+  `ml/train.py`의 `--train-start-quarter`로 급성 코로나 구간(2021~2022)을 학습에서
+  제외할 수 있다 — 그 구간 라벨이 점포 수가 적은 상권에서 쉽게 오염되는 걸
+  실측으로 확인했기 때문이다. `backend/scoring.py`는 여기에 더해 점포수가 적은
+  상권을 업종별 중앙값에 비례한 베이지안 축소로 한 번 더 보정한다
+  (`STORE_COUNT_CONFIDENCE_K_FRAC`, `MIN_STORE_COUNT_ANY_TRUST`) — 고정 상수로
+  바꾸면 업종마다 점포수 규모가 달라 다시 안 맞을 수 있으니 주의한다.
+  모델이 바뀌면 `ml/models/`(실험용, gitignore)가 아니라 **`backend/models/`**에
+  같은 버전 문자열로 복사해야 배포판에 실린다.
 
 새 컴포넌트를 만들 때는 `docs/PRD.md`가 사양의 기준 문서다 (§9~§11 Agent/Tool,
 §14~§15 모델·Temporal Split, §19 기술 스택).
@@ -169,9 +184,16 @@ Supabase에 올려도 이 시간 전엔 화면에 안 보인다 — 즉시 반�
   ETL의 `extra_features.demand_per_store`, `verification_tools.competition_density()`,
   `backend/scoring.py`의 `_competition_score()`, `backend/detail.py`의 `_competition_frame()`.
   보증금/임대료는 여전히 미보유라 `budget_validator`는 `verified_by_data=False`를 반환하고,
-  화면의 비용 진단 영역도 항상 `available=false`다.
-  `districts.gu_name / latitude / longitude`도 같은 이유로 NULL이다 — 지도 기능은
-  "영역-상권" 데이터나 별도 geocoding 단계가 선행되어야 한다.
+  화면의 비용 진단 영역도 항상 `available=false`다. 한국부동산원 R-ONE에 실데이터가
+  있지만 전국 368개 "대표 상권" 단위라 서울시 1,638개 골목상권보다 훨씬 거칠어
+  편입하지 않기로 했다(정밀도를 지어내지 않는다는 원칙).
+  `districts.gu_name / latitude / longitude / area_m2`는 `alley_compass_etl/district_geo.py`
+  (서울시 "영역-상권" API, 중심점+면적 — 다각형 아님)로 채운다. 이미
+  `alley_compass_etl.py`로 한 번이라도 등장한 `district_code`에만 반영하고, 아직
+  이 스크립트를 안 돌렸거나 나중에 새 업종 ETL로 새로 생긴 상권은 계속 NULL/None일
+  수 있다 — `backend/main.py`의 `_none_if_nan()`이 pandas NaN을 Pydantic이 받는
+  `None`으로 바꿔주므로, 새 업종을 추가했으면 `district_geo.py --upload`를 다시
+  돌려 지도 데이터를 보강하는 걸 잊지 않는다.
 - 데이터 부족을 추정으로 메우지 않는다. `trend()`는 분기가 모자라면
   `available=False`와 이유를 반환하고, QoQ 성장률은 직전 행이 실제 직전 분기일 때만 계산한다.
 - 2026-07-03 서울시 제공 기준 변경 때문에 `MIN_SUPPORTED_QUARTER = 20211` 미만은 거부한다.

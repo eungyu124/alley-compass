@@ -65,6 +65,10 @@ python alley_compass_etl.py \
 
 업종명을 잘못 입력하면 스크립트가 사용 가능한 업종명 목록을 출력합니다.
 
+실제로 Supabase에 올라가 있는 건 위 예시보다 외식업(CS1) 쪽이 더 두텁습니다 —
+한식·중식·일식·양식·제과점·치킨·분식·호프-간이주점·커피-음료(CS1 10개 세부업종
+중 9개, Supabase 무료 티어 저장 용량 여유를 남기려고 패스트푸드점만 제외)입니다.
+
 ---
 
 ## 5. 전체 업종
@@ -172,9 +176,10 @@ python pipeline.py --district-code 3120014 --business-code CS100010 \
 (PRD §10.3), 그래도 틀리면 그 문장은 최종 결과에서 제외한다
 (PRD §18, Unsupported Claim Rate 목표 0%).
 
-LightGBM 생존 안정성 Score는 아직 없어 Fact Sheet에 포함되어 있지
-않다. 모델이 준비되면 `fact_sheet.build_fact_sheet()`에 한 줄
-추가하면 된다.
+LightGBM 생존 안정성 Score는 `backend/scoring.py`의 `/rank`엔 이미 연결돼
+있지만, 이 Fact Sheet/Agent 파이프라인엔 아직 포함되어 있지 않다 — 추천/반대
+근거 문장이 인용하는 수치는 여전히 원본 feature 기반이다. 모델 예측을 여기도
+쓰려면 `fact_sheet.build_fact_sheet()`에 한 줄 추가하면 된다.
 
 ---
 
@@ -195,10 +200,23 @@ demand_per_store = backing_demand / store_count
 값이 클수록 점포 하나가 나눠 갖는 수요가 커서 경쟁이 여유롭다는 뜻입니다.
 `store_count`가 0이면 나누지 않고 NULL로 둡니다.
 
-`verification_tools.competition_density()`와 웹 프론트(`web/src/lib/scoring.js`)가
-같은 정의를 사용하므로, 화면에 보이는 경쟁강도와 검증 Tool의 판정 기준이 일치합니다.
+`verification_tools.competition_density()`와 `backend/scoring.py`의
+`_competition_score()`가 같은 정의를 사용하므로, 화면에 보이는 경쟁강도와 검증
+Tool의 판정 기준이 일치합니다. 프론트는 숫자를 직접 계산하지 않습니다 —
+`backend/scoring.py` 한 곳에서만 계산합니다.
 
-### `districts.gu_name`, `latitude`, `longitude`
+### `districts.gu_name`, `latitude`, `longitude`, `area_m2`
 
-현재 5종 API의 상권 행에는 자치구/위경도가 포함되지 않습니다.
-지도 기능을 붙일 때 `영역-상권` 데이터 또는 별도 geocoding 파이프라인으로 추가합니다.
+5종 API의 상권 행에는 자치구/위경도/면적이 포함되지 않습니다. `district_geo.py`가
+별도 API(`영역-상권`, TbgisTrdarRelm — 중심점 좌표 + 면적만 제공, 다각형 아님)로
+이 값을 채웁니다.
+
+```bash
+python district_geo.py --upload
+```
+
+이미 `alley_compass_etl.py`로 한 번이라도 등장한 `district_code`에만 반영합니다
+— 등장한 적 없는 상권을 새로 만들지 않습니다. **새 업종을 ETL로 추가한 뒤에는
+이 스크립트를 다시 돌려야** 그 업종에만 등장하는 상권도 지도에 나옵니다(안 돌리면
+좌표가 NULL로 남고, 지도에서 그 상권만 조용히 빠집니다 — 지어낸 좌표를 넣지
+않는다는 원칙과 같습니다).

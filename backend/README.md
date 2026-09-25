@@ -73,10 +73,11 @@ Python 서버리스 런타임은 `report.py`가 쓰는 WeasyPrint(Pango/Cairo �
 
 | | | 비용 |
 |---|---|---|
-| `GET /health` | 상태 확인 | 무료 |
+| `GET /health` | 상태 확인 + 현재 활성 모델 버전(`active_model_version()`) | 무료 |
 | `GET /business-types` | 업종 목록 | 무료 |
 | `GET /districts?business_code=` | 상권 목록 | 무료 |
 | `POST /rank` | 조건 기반 전체 재랭킹 (PRD §16) | 무료 (결정론적, Claude 미사용) |
+| `POST /parse-condition` | 자연어 문장 → 조건(업종·예산·연령·상권성격·우선순위) 구조화 출력 | **Claude API 과금 발생** (시간당 크레딧 한도 있음) |
 | `POST /districts/{code}/agents` | 추천/반대 근거 생성 + 검증 (PRD §10) | **Claude API 과금 발생** |
 | `POST /report` | Top-K 상권 + 각각의 추천/반대 근거를 PDF 한 장으로 (PRD F-15) | **Claude API 과금 발생** (상권당 최대 2회, `top_k` 1~10) |
 
@@ -156,10 +157,32 @@ brew install pango   # cairo/glib/harfbuzz 등 의존성도 같이 설치됨
 
 ## 모델 버전
 
-`/rank`는 아직 LightGBM이 아니라 `scoring.py`의 휴리스틱 Score를 쓴다.
-응답의 `model_version: "heuristic-v0"`로 항상 명시한다. LightGBM이 준비되면
-`scoring.rank_districts()`의 `stability_score` 계산 부분만 모델 추론으로
-바꾸면 되고, 응답 스키마(`RankResponse`)는 그대로 유지된다.
+`scoring.py`가 `backend/models/*.joblib`(파일명 `v-YYYYMMDD-HHMM.joblib`, 문자열
+정렬 = 시간 정렬이라 가장 최신 파일을 자동으로 고른다)을 찾으면 그 LightGBM
+모델로 `stability_score`를 계산하고 응답에 `model_version: "lightgbm-<버전>"`을
+찍는다. 파일이 없거나(로컬 개발 등) 예측이 실패하면 원본 feature로 계산한
+휴리스틱 Score(`"heuristic-v0"`)로 조용히 대체한다 — 항상 실제로 쓰인 쪽이
+응답에 그대로 명시되므로 화면과 검증 Tool이 서로 다른 값을 근거로 말하는 일이
+없다.
+
+모델을 새로 학습했으면(`ml/train.py`) `ml/models/`(실험용, gitignore)가 아니라
+**`backend/models/`**에 같은 버전 문자열로 복사해야 "승격"되어 Docker 이미지에
+실린다.
+
+**점포수가 적은 상권 보정(베이지안 축소)**: LightGBM이든 휴리스틱 폴백이든,
+점포가 1~2개뿐인 상권은 "폐업할 기회 자체가 없어 폐업률이 항상 0%"라 실제보다
+안정적으로 오인되는 걸 실측으로 확인했다. `rank_districts()`가 계산 직후 한 번 더
+`stability_score`를 업종 자체의 점포수 중앙값 쪽으로 끌어당긴다
+(`STORE_COUNT_CONFIDENCE_K_FRAC`) — 업종마다 점포수 규모가 완전히 달라
+(예: 커피-음료 중앙값 7개 vs 양식음식점 중앙값 3개) 고정 상수 하나로는
+어느 한쪽이 항상 과하거나 부족했기 때문이다. 점포수가 `MIN_STORE_COUNT_ANY_TRUST`
+미만이면 비례식과 무관하게 원점수를 아예 안 믿고 업종 중앙값으로 대체한다.
+
+**`final_score` 구성**: `stability_score`(생존 안정성) + `target_fit_score`
+(사용자가 고른 상권성격·연령대 기반 타겟 고객층 적합도)의 가중합이다(PRD §16).
+기본 비중은 stability 0.70 : target_fit 0.30이고, `priority="survival"`이면
+stability 쪽을, `priority="growth"`면 target_fit 쪽을 더 준다. 예산(Budget Fit)은
+보증금/임대료 데이터가 없어 여전히 반영하지 않는다.
 
 ## 세션 기록
 
