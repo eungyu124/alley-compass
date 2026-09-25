@@ -46,10 +46,19 @@ Priority = Literal["survival", "cost", "growth"]
 
 _BASE_WEIGHTS = {"demand": 0.30, "comp": 0.24, "perf": 0.16, "access": 0.12, "stability": 0.18}
 
-# 실측 25th percentile이 3이라(중앙값 7) 이 기준으로 빠지는 건 전체의 20% 이내다.
-# 점포 1~2개인 상권은 폐업률이 태생적으로 0%나 100%밖에 못 나와서(중간이 없음)
-# LightGBM이 "안정적"으로 오인하는 걸 재현해 확인했다 — rank_districts() 참고.
-MIN_STORE_COUNT_FOR_MODEL = 3
+# 표본 신뢰도 보정(베이지안 축소) 강도. 점포 store_count개인 상권의 점수를
+# "store_count : STORE_COUNT_CONFIDENCE_K" 비율로 원점수와 이 업종 전체
+# 중앙값 사이를 섞는다 — store_count가 작을수록 중앙값 쪽으로 더 끌려간다.
+# 점포 1개면 5:1이라 대부분 중앙값 쪽, 점포 20개면 20:5=4:1이라 원점수를
+# 거의 그대로 믿는 식이다. rank_districts() 참고.
+#
+# 하드컷(예: "점포 3개 미만이면 통째로 배제") 대신 이 방식을 쓰는 이유:
+# 점포 1개짜리 상권이 폐업률로도(LightGBM), "수요÷점포수" 나눗셈으로도
+# (휴리스틱 경쟁강도 축) "매우 안정적"으로 나오는 걸 실측으로 확인했는데,
+# 이건 LightGBM만의 문제가 아니라 휴리스틱 자체의 구조적 약점이기도 했다
+# — 어느 쪽으로 계산했든 마지막에 표본 크기로 한 번 더 보정해야 두 경로
+# 모두에서 막힌다.
+STORE_COUNT_CONFIDENCE_K = 5
 
 _MODELS_DIR = Path(__file__).resolve().parent / "models"
 _LGBM_CACHE: dict | None = None
@@ -223,19 +232,22 @@ def rank_districts(
     # stability_score를 그대로 쓴다(폴백).
     lgbm_score, model_version = _lightgbm_stability(scope)
     if lgbm_score is not None:
-        # 실측으로 확인한 문제: 점포가 1~2개뿐인 상권은 폐업률이 학습 시점
-        # 기준으로도 거의 항상 0%다(망할 기회 자체가 적었을 뿐 검증된 안정성이
-        # 아니다) — 그런데 모델이 이걸 "안정적"으로 오인해서, 점포 1개짜리
-        # 신생 상권이 강남역보다 안전하다고 나오는 걸 직접 재현해 확인했다.
-        # 표본이 이 기준보다 적은 행은 LightGBM 대신 휴리스틱(수요·경쟁·접근성
-        # 등 여러 축의 가중 평균)으로 대체한다 — 휴리스틱은 closure_rate 하나에
-        # 안 기대고 여러 축을 같이 보므로, 이런 상권의 낮은 수요·접근성이
-        # 그대로 반영돼 점수가 과장되지 않는다. "표본 부족을 안정성으로
-        # 둔갑시키지 않는다"는 원칙 — 재학습 없이 바로 적용 가능한 완화책이다.
-        low_sample = scope["store_count"].fillna(0) < MIN_STORE_COUNT_FOR_MODEL
-        stability_score = lgbm_score.where(~low_sample, heuristic_stability)
-        if low_sample.any():
-            model_version = f"{model_version}+heuristic-low-sample"
+        stability_score = lgbm_score
+
+    # 표본 신뢰도 보정 — 어느 쪽으로 계산했든(LightGBM이든 휴리스틱 폴백이든)
+    # 마지막에 한 번 더 건다. 점포가 1~2개뿐인 상권은 "폐업률이 학습 시점
+    # 기준으로도 거의 항상 0%"라 LightGBM이 안정적으로 오인하고, 휴리스틱도
+    # "수요÷점포수"라 점포수가 작을수록 값이 커져서 마찬가지로 부풀려지는 걸
+    # 실측으로 확인했다(점포 1개짜리 상권이 강남역보다 안전하다고 나온 사례,
+    # 그리고 이 필터를 store_count<3에만 걸었을 때도 store_count 1~2인
+    # 상권이 상위 15위 안에 계속 남아있던 것도 확인함). 두 계산 경로 모두
+    # 표본 크기를 반영하지 못하므로, 결과값에 한 번 더 "점포 수가 적을수록
+    # 이 업종 전체 중앙값 쪽으로 끌어당기는" 베이지안 축소를 적용한다 —
+    # 하드컷보다 부드럽고, 두 경로 모두에서 동시에 막힌다.
+    prior = float(stability_score.median())
+    store_count = scope["store_count"].fillna(0)
+    confidence = store_count / (store_count + STORE_COUNT_CONFIDENCE_K)
+    stability_score = (confidence * stability_score + (1 - confidence) * prior).round(1)
 
     out = scope[["district_code", "district_name"]].copy()
 
