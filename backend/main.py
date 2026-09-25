@@ -233,6 +233,20 @@ def _charge_or_429(bucket: str, user_id: str, credits: int, limit: int) -> None:
         ) from exc
 
 
+def _none_if_nan(value):
+    """pandas가 만든 결측값(NaN/NaT/pd.NA)을 Pydantic이 이해하는 파이썬 None으로 바꾼다.
+
+    scoring.py의 rank_districts()가 이미 .where(notna(), None)으로 NaN을 None으로
+    바꿔서 내보내는데도, 실제로 Render에서 특정 상권(geo 보강이 안 된 신규
+    상권 등)에서 gu_name이 float NaN인 채로 DistrictScore(gu_name=...)에
+    들어가 pydantic.ValidationError(string_type)를 내는 걸 직접 확인했다 —
+    pandas 문자열 dtype 컬럼이 itertuples()를 거치면서 None이 다시 NaN으로
+    바뀌는 경우가 있다. 그래서 Pydantic 모델을 만드는 이 마지막 지점에서
+    한 번 더 확실히 None으로 정리한다.
+    """
+    return None if pd.isna(value) else value
+
+
 def _condition_text(req: RankRequest | AgentRequest | ReportRequest) -> str:
     age_label = {"20": "20대", "30": "30대", "both": "20~30대"}[req.age]
     character_label = {
@@ -420,10 +434,10 @@ def rank(req: RankRequest, user: CurrentUser = Depends(require_user)) -> RankRes
                 target_fit_score=r.target_fit_score,
                 final_score=r.final_score,
                 score_breakdown=r.breakdown,
-                gu_name=r.gu_name,
-                latitude=r.latitude,
-                longitude=r.longitude,
-                area_m2=r.area_m2,
+                gu_name=_none_if_nan(r.gu_name),
+                latitude=_none_if_nan(r.latitude),
+                longitude=_none_if_nan(r.longitude),
+                area_m2=_none_if_nan(r.area_m2),
             )
             for r in top.itertuples()
         ],
