@@ -271,8 +271,34 @@ def rank_districts(
 
     out["stability_score"] = stability_score
     out["target_fit_score"] = demand.round(1)
-    # 예산 데이터가 없어 final_score = stability_score (§16 Budget Fit 항은 현재 미반영)
-    out["final_score"] = out["stability_score"]
+
+    # final_score = stability_score(생존 안정성) + target_fit_score(상권성격·
+    # 연령대로 고른 타겟 고객층 적합도)의 가중합(PRD §16). 예산(Budget Fit)은
+    # 여전히 보증금/임대료 데이터가 없어 반영하지 않는다.
+    #
+    # 이전엔 final_score = stability_score였다 — LightGBM이 승격된 뒤로는
+    # stability_score가 모델 예측값 단독이라 사용자가 상권성격을 바꿔도 순위가
+    # 안 바뀌는 문제가 있었다(target_fit_score는 화면 표시용 숫자로만 쓰이고
+    # 정렬엔 안 들어갔음). 기본 가중치 0.30(target_fit)은 LightGBM 이전
+    # 휴리스틱 구성의 demand 축 가중치(_BASE_WEIGHTS["demand"])와 같은 값을
+    # 그대로 가져왔다 — 원래 의도했던 상대적 비중을 유지하기 위해서다.
+    final_weights = {"stability": 0.70, "target_fit": 0.30}
+    if priority == "survival":
+        final_weights["stability"] *= 1.3
+    elif priority == "growth":
+        # growth 우선순위는 매출 성장률(perf) 축을 더 보고 싶다는 뜻이지만
+        # perf는 final_score 구성 요소가 아니다(breakdown 표시 전용). 대신
+        # "지금 당장의 매출 실적"보다 "내 타겟 고객층이 이 상권에 얼마나
+        # 맞는가"가 성장 가능성에 더 가까운 신호라고 보고 target_fit 비중을
+        # 높인다.
+        final_weights["target_fit"] *= 1.3
+    total_final_w = sum(final_weights.values())
+    final_weights = {k: v / total_final_w for k, v in final_weights.items()}
+
+    out["final_score"] = (
+        final_weights["stability"] * out["stability_score"]
+        + final_weights["target_fit"] * out["target_fit_score"]
+    ).round(1)
 
     n = len(scope)
     breakdown_cols = {
